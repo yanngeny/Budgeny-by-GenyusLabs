@@ -5,7 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { deflateRawSync } from 'node:zlib';
 import { isZip, unzipFirst } from '../js/zip.js';
 import { fileURLToPath } from 'node:url';
-import { emptyData, normalize, mergeData, summarize, fingerprint, afterPayday } from '../js/model.js';
+import { emptyData, normalize, mergeData, summarize, fingerprint, periodFn, paydays, cycleLabel, suggestPay } from '../js/model.js';
+import { backFrom } from '../js/nav.js';
 import { parseBoursorama, prepareImport, parseAmount, parseDate, ruleKeyOf, classify, decodeBuffer } from '../js/csv.js';
 import { isNewer } from '../js/update.js';
 
@@ -212,29 +213,78 @@ t('mois choisi à la main pour n’importe quelle opération (virement de clôtu
   assert.equal(nov.spent.savings, 0);
 });
 
-t('dépenses d’après-paye : détectées, sans toucher aux virements d’épargne ni aux choix manuels', () => {
+t('paye détectée par son libellé : les mois suivent la paye, quelle que soit sa date', () => {
   const d = emptyData();
-  d.settings.incomeShiftDay = 28;
+  d.settings.payKeys = ['link france'];
+  const L = 'VIR SEPA IT LINK FRANCE';
   d.transactions = [
-    { id: 'pay', date: '2026-09-29', amount: 2543.99, bucket: 'income' },
-    { id: 'small', date: '2026-09-29', amount: 9, bucket: 'income' },
-    { id: 'sweep', date: '2026-09-29', amount: -500, bucket: 'savings', sub: 'Livret' }, // clôture septembre
-    { id: 'a', date: '2026-09-30', amount: -486, bucket: 'needs' },
-    { id: 'b', date: '2026-09-30', amount: -19.75, bucket: 'wants' },
-    { id: 'c', date: '2026-09-29', amount: -6.72, bucket: 'needs' },
-    { id: 'before', date: '2026-09-15', amount: -50, bucket: 'needs' }, // avant la paye
-    { id: 'manual', date: '2026-09-30', amount: -30, bucket: 'needs', period: '2026-09' }, // choix manuel respecté
-    { id: 'other', date: '2026-10-05', amount: -10, bucket: 'needs' }, // autre mois
+    { id: 'p1', date: '2026-09-29', amount: 2543.99, label: L, bucket: 'income' },
+    { id: 'p2', date: '2026-10-29', amount: 2410.76, label: L, bucket: 'income' },
+    { id: 'extra', date: '2026-10-16', amount: 243, label: L, bucket: 'income' }, // même employeur, pas la paye
+    { id: 'sw1', date: '2026-09-29', amount: -500, label: 'VIR depuis BoursoBank', bucket: 'savings', sub: 'Livret' }, // clôture septembre
+    { id: 'sw2', date: '2026-10-29', amount: -500, label: 'VIR depuis BoursoBank', bucket: 'savings', sub: 'Livret' }, // clôture octobre
+    { id: 'a', date: '2026-09-30', amount: -486, label: 'FAUTEUIL', bucket: 'needs' }, // après la paye de septembre
+    { id: 'b', date: '2026-10-28', amount: -12.89, label: 'VINTED', bucket: 'wants' }, // veille de paye
+    { id: 'c', date: '2026-10-30', amount: -46.59, label: 'BOUYGUES', bucket: 'needs' }, // après la paye d'octobre
+    { id: 'early', date: '2026-09-10', amount: -20, label: 'AVANT', bucket: 'needs' }, // avant la 1re paye connue
+    { id: 'manual', date: '2026-10-30', amount: -5, label: 'MANUEL', bucket: 'needs', period: '2026-10' }, // choix manuel prioritaire
   ];
-  const ap = afterPayday(d, '2026-10');
-  assert.equal(ap.pay.id, 'pay');
-  assert.deepEqual(ap.ops.map((o) => o.id).sort(), ['a', 'b', 'c']);
-  assert.equal(Math.round(ap.total * 100) / 100, -512.47);
-  assert.equal(afterPayday(d, '2026-11'), null); // pas de paye décalée vers novembre
-  for (const o of ap.ops) o.period = '2026-10'; // ce que fait setPeriod : le calcul suit
+  const per = periodFn(d);
+  const got = Object.fromEntries(d.transactions.map((x) => [x.id, per(x)]));
+  assert.deepEqual(got, { p1: '2026-10', p2: '2026-11', extra: '2026-10', sw1: '2026-09', sw2: '2026-10', a: '2026-10', b: '2026-10', c: '2026-11', early: '2026-09', manual: '2026-10' });
+  assert.deepEqual(paydays(d).map((p) => p.id), ['p1', 'p2']); // le virement de 243 € est écarté
+  const r2 = (n) => Math.round(n * 100) / 100;
   const oct = summarize(d, '2026-10');
-  assert.equal(Math.round(oct.spent.needs * 100) / 100, 502.72); // 486 + 6.72 déplacés + 10 déjà en octobre
-  assert.equal(summarize(d, '2026-09').spent.needs, 80); // 'before' (50) + 'manual' (30)
+  assert.equal(r2(oct.income), 2786.99); // paye du 29/09 + virement du 16/10
+  assert.equal(r2(oct.spent.needs), 491); // 486 + 5 (choix manuel)
+  assert.equal(r2(oct.spent.wants), 12.89);
+  assert.equal(oct.spent.savings, 500); // virement du 29/10 qui clôture octobre
+  const nov = summarize(d, '2026-11');
+  assert.equal(r2(nov.income), 2410.76);
+  assert.equal(r2(nov.spent.needs), 46.59);
+  assert.equal(nov.spent.savings, 0);
+});
+
+t('paye irrégulière (début de mois) : le mois porte le nom du mois où tombent la plupart de ses jours', () => {
+  assert.equal(cycleLabel('2026-09-29'), '2026-10');
+  assert.equal(cycleLabel('2026-11-03'), '2026-11');
+  assert.equal(cycleLabel('2026-12-29'), '2027-01');
+  const d = emptyData();
+  d.settings.payKeys = ['employeur'];
+  d.transactions = [
+    { id: 'p1', date: '2026-10-03', amount: 2000, label: 'VIR EMPLOYEUR', bucket: 'income' },
+    { id: 'p2', date: '2026-11-05', amount: 2100, label: 'VIR EMPLOYEUR', bucket: 'income' },
+    { id: 'x', date: '2026-10-20', amount: -10, label: 'X', bucket: 'needs' },
+    { id: 'y', date: '2026-11-06', amount: -10, label: 'Y', bucket: 'needs' },
+  ];
+  const per = periodFn(d);
+  assert.deepEqual(d.transactions.map(per), ['2026-10', '2026-11', '2026-10', '2026-11']);
+});
+
+t('« Détecter ma paye » propose le plus gros revenu ; sans paye, ancien comportement conservé', () => {
+  const d = emptyData();
+  d.transactions = [
+    { id: '1', date: '2026-10-05', amount: 350, label: 'VIR de DUREL JEANNE - Loyer etc', bucket: 'income' },
+    { id: '2', date: '2026-10-29', amount: 2410.76, label: 'VIR SEPA IT LINK FRANCE', bucket: 'income' },
+  ];
+  const c = suggestPay(d);
+  assert.equal(c.key, 'link france');
+  assert.equal(c.amount, 2410.76);
+  assert.deepEqual(paydays(d), []); // aucune paye enregistrée : rien ne change
+  assert.equal(periodFn(d)(d.transactions[1]), '2026-10');
+});
+
+t('bouton retour d’Android : remonte d’un écran, quitte à l’Accueil', () => {
+  assert.equal(backFrom('home'), null);
+  assert.deepEqual(backFrom('edit'), { tab: 'ops' });
+  assert.deepEqual(backFrom('detail'), { tab: 'home' });
+  assert.deepEqual(backFrom('add'), { tab: 'home' });
+  assert.deepEqual(backFrom('ops'), { tab: 'home' });
+  assert.deepEqual(backFrom('set'), { tab: 'home' });
+  assert.deepEqual(backFrom('import', true), { tab: 'import', clearImport: true });
+  assert.deepEqual(backFrom('import', false), { tab: 'ops' });
+  const app = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  assert.match(app, /addListener\?\.\('backButton'/); // le bouton retour est bien branché
 });
 
 t('comparaison de versions', () => {

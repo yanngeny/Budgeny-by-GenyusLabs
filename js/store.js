@@ -1,6 +1,6 @@
 // État de l'appli : copie de travail en localStorage, la source de vérité partagée est le fichier JSON.
 import { emptyData, normalize, uid, RETRAIT } from './model.js';
-import { labelMatchesKey } from './csv.js';
+import { labelMatchesKey } from './text.js';
 
 const KEY = 'budgeny.data.v1';
 let data = emptyData();

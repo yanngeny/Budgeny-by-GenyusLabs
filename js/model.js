@@ -1,4 +1,6 @@
 // Modèle de données Budgeny : un seul objet JSON, fusionnable ligne par ligne.
+import { labelMatchesKey, ruleKeyOf } from './text.js';
+
 export const SCHEMA = 1;
 
 export const BUCKETS = {
@@ -35,6 +37,7 @@ export function defaultSettings() {
     targets: { needs: 50, wants: 30, savings: 20 },
     me: 'Moi',
     bankUrl: BANK_URL,
+    payKeys: [], // clés de libellé des virements de paye (ex. « link france ») : elles ouvrent chaque mois budgétaire
     incomeShiftDay: 0, // 0 = désactivé ; ex. 25 : un revenu reçu à partir du 25 compte pour le mois suivant
     bankMode: 'app', // 'app' : ouvre l'appli BoursoBank (site web en secours), 'web' : le site
     _m: 0,
@@ -110,31 +113,67 @@ export function shiftMonth(k, delta) {
   return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`;
 }
 
-// Mois budgétaire d'une opération. Un revenu reçu à partir du jour `incomeShiftDay` (ex. salaire versé le 28)
-// compte pour le mois suivant ; `t.period` (AAAA-MM) force un mois précis.
-export function periodOf(t, settings) {
-  if (t.period) return t.period;
+// --- Mois budgétaire -----------------------------------------------------------------------------
+// Mode « paye » : chaque virement de paye (reconnu par son libellé, settings.payKeys) ouvre un mois budgétaire
+// qui dure jusqu'à la paye suivante, quelle que soit sa date de versement. Le mois porte le nom du mois où
+// tombe la majorité de ses jours. Sans paye connue : ancien comportement (jour de décalage des revenus).
+export const cycleLabel = (date) => {
+  const t = new Date(date + 'T12:00:00');
+  t.setDate(t.getDate() + 15);
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`;
+};
+
+const dayDiff = (a, b) => Math.abs(new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000;
+
+export const payKeysOf = (settings) => (Array.isArray(settings?.payKeys) ? settings.payKeys : []);
+
+// Dates de paye : parmi les entrées d'argent au libellé reconnu, on garde la plus grosse, on écarte celles à
+// moins de 20 jours (ex. un petit virement du même employeur en cours de mois), et ainsi de suite.
+export function paydays(d) {
+  const keys = payKeysOf(d.settings);
+  if (!keys.length) return [];
+  const cands = d.transactions.filter((t) => t.amount > 0 && keys.some((k) => labelMatchesKey(k, t.label))).sort((a, b) => b.amount - a.amount);
+  const kept = [];
+  for (const t of cands) if (!kept.some((p) => dayDiff(p.date, t.date) < 20)) kept.push(t);
+  return kept.sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+// Ancien mode : un revenu reçu à partir du jour `incomeShiftDay` compte pour le mois suivant.
+function legacyPeriod(t, settings) {
   const month = t.date.slice(0, 7);
   const shift = Number(settings?.incomeShiftDay) || 0;
   if (t.bucket === 'income' && shift > 0 && Number(t.date.slice(8, 10)) >= shift) return shiftMonth(month, 1);
   return month;
 }
 
-// Dépenses faites à partir du jour de la paye mais encore comptées dans le mois précédent.
-// La paye du mois `month` = le plus gros revenu reçu le mois d'avant et compté ici. Les virements
-// d'épargne (qui clôturent l'ancien mois) et les opérations dont le mois a été choisi à la main sont laissés.
-export function afterPayday(d, month) {
-  const prev = shiftMonth(month, -1);
-  const shifted = d.transactions.filter((t) => t.bucket === 'income' && t.date.slice(0, 7) === prev && periodOf(t, d.settings) === month);
-  if (!shifted.length) return null;
-  const pay = shifted.reduce((a, b) => (b.amount > a.amount ? b : a));
-  const ops = d.transactions.filter((t) => !t.period && t.date.slice(0, 7) === prev && t.date >= pay.date && t.amount < 0 && (t.bucket === 'needs' || t.bucket === 'wants'));
-  if (!ops.length) return null;
-  return { pay, from: prev, ops: ops.sort((a, b) => (a.date < b.date ? -1 : 1)), total: ops.reduce((s, t) => s + t.amount, 0) };
+// Renvoie une fonction (opération) -> mois « AAAA-MM » ; à appeler une fois par écran puis à réutiliser.
+// `t.period` (choix manuel) est toujours prioritaire. Un virement d'épargne fait le jour exact de la paye clôture
+// l'ancien mois (tu y verses ce qu'il te restait) : il reste dans le mois précédent.
+export function periodFn(d) {
+  const pays = paydays(d);
+  return (t) => {
+    if (t.period) return t.period;
+    if (!pays.length) return legacyPeriod(t, d.settings);
+    let idx = -1;
+    for (let i = 0; i < pays.length && pays[i].date <= t.date; i++) idx = i;
+    if (idx >= 0 && t.date === pays[idx].date && t.bucket === 'savings' && t.amount < 0) idx--;
+    if (idx < 0) return shiftMonth(cycleLabel(pays[0].date), -1); // avant la 1re paye connue : mois précédent
+    return cycleLabel(pays[idx].date);
+  };
+}
+
+// Suggestion pour « Détecter ma paye » : le plus gros revenu importé.
+export function suggestPay(d) {
+  const inc = d.transactions.filter((t) => t.amount > 0 && (t.bucket === 'income' || !t.bucket));
+  if (!inc.length) return null;
+  const top = inc.reduce((a, b) => (b.amount > a.amount ? b : a));
+  const key = ruleKeyOf(top.label);
+  return key ? { key, label: top.label, amount: top.amount } : null;
 }
 
 export function monthsOf(d) {
-  return [...new Set(d.transactions.map((t) => periodOf(t, d.settings)))].sort().reverse();
+  const per = periodFn(d);
+  return [...new Set(d.transactions.map(per))].sort().reverse();
 }
 
 export const RETRAIT = 'Retrait';
@@ -144,6 +183,7 @@ export const RETRAIT = 'Retrait';
 export const isWithdrawal = (t) => t.bucket === 'savings' && t.amount > 0 && t.sub === RETRAIT;
 
 export function summarize(d, month) {
+  const per = periodFn(d);
   const spent = { needs: 0, wants: 0, savings: 0 };
   const withdrawn = { needs: 0, wants: 0 };
   let income = 0;
@@ -155,7 +195,7 @@ export function summarize(d, month) {
   let lastDate = '';
   const ignored = { count: 0, sum: 0 };
   for (const t of d.transactions) {
-    if (periodOf(t, d.settings) !== month) continue;
+    if (per(t) !== month) continue;
     count++;
     allSum += t.amount;
     if (t.date > lastDate) lastDate = t.date;

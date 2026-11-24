@@ -1,6 +1,6 @@
 import * as store from './store.js';
 import * as sync from './sync.js';
-import { init as initUi } from './ui.js';
+import { init as initUi, goBack } from './ui.js';
 
 store.load();
 sync.init();
@@ -14,6 +14,12 @@ const resume = () => sync.now();
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) resume();
 });
-window.Capacitor?.Plugins?.App?.addListener?.('appStateChange', (s) => {
+const AppPlugin = window.Capacitor?.Plugins?.App;
+AppPlugin?.addListener?.('appStateChange', (s) => {
   if (s.isActive) resume();
+});
+
+// Bouton retour d'Android : remonte d'un écran dans l'appli ; à l'Accueil, il quitte l'appli.
+AppPlugin?.addListener?.('backButton', () => {
+  if (!goBack()) AppPlugin.exitApp?.();
 });

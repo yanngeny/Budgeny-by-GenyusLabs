@@ -1,12 +1,8 @@
 // Import des exports CSV BoursoBank (Boursorama) : analyse, dédoublonnage, classement.
 import { RETRAIT } from './model.js';
+import { norm, ruleKeyOf, ruleMatches, labelMatchesKey } from './text.js';
+export { ruleKeyOf, labelMatchesKey };
 
-const norm = (s) =>
-  String(s ?? '')
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase()
-    .trim();
 
 export function decodeBuffer(buf) {
   try {
@@ -145,22 +141,6 @@ export function addHashes(list) {
   return list;
 }
 
-const STOP = new Set(['carte', 'prlv', 'sepa', 'vir', 'virement', 'paiement', 'achat', 'par', 'les', 'des']);
-
-export function ruleKeyOf(label) {
-  return norm(label)
-    .split(/[^a-z]+/)
-    .filter((w) => w.length >= 3 && !STOP.has(w))
-    .slice(0, 2)
-    .join(' ');
-}
-
-function ruleMatches(key, text) {
-  return key !== '' && key.split(' ').every((tok) => text.includes(tok));
-}
-
-// Une opération déjà enregistrée (libellé seul) correspond-elle à cette règle ?
-export const labelMatchesKey = (key, label) => ruleMatches(key, norm(label));
 
 const DEFAULTS = [
   [/\b(revenu|revenus|salaire|paie|remuneration|traitement)\b/, 'income', '', 'pos'],
