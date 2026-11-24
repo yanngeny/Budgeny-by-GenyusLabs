@@ -5,9 +5,9 @@ import { execFileSync } from 'node:child_process';
 import { deflateRawSync } from 'node:zlib';
 import { isZip, unzipFirst } from '../js/zip.js';
 import { fileURLToPath } from 'node:url';
-import { emptyData, normalize, mergeData, summarize, fingerprint, periodFn, paydays, cycleLabel, suggestPay } from '../js/model.js';
+import { emptyData, normalize, mergeData, summarize, fingerprint, periodFn, paydays, cycleLabel, suggestPay, accountBalance, reconcile } from '../js/model.js';
 import { backFrom } from '../js/nav.js';
-import { parseBoursorama, prepareImport, parseAmount, parseDate, ruleKeyOf, classify, decodeBuffer } from '../js/csv.js';
+import { parseBoursorama, prepareImport, parseAmount, parseDate, ruleKeyOf, classify, decodeBuffer, anchorOf } from '../js/csv.js';
 import { isNewer } from '../js/update.js';
 
 let n = 0;
@@ -285,6 +285,75 @@ t('bouton retour d’Android : remonte d’un écran, quitte à l’Accueil', ()
   assert.deepEqual(backFrom('import', false), { tab: 'ops' });
   const app = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
   assert.match(app, /addListener\?\.\('backButton'/); // le bouton retour est bien branché
+});
+
+t('solde du compte : déduit de l’export, rapproché de la somme des opérations (cas réel de l’utilisateur)', () => {
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const L = 'VIR SEPA IT LINK FRANCE';
+  const imp = (id, date, amount, extra = {}) => ({ id, date, amount, label: extra.label ?? 'OP ' + id, source: 'import', bucket: extra.bucket ?? 'needs', ...extra });
+  const d = emptyData();
+  d.settings.payKeys = ['link france'];
+  d.account = { date: '2026-11-24', balance: 488.82 }; // dernier solde lu dans l'export
+  d.transactions = [
+    imp('v', '2026-10-28', -12.89, { bucket: 'wants' }),
+    imp('pay', '2026-10-29', 2410.76, { label: L, bucket: 'income' }),
+    imp('sweep', '2026-10-29', -500, { bucket: 'savings', sub: 'Livret' }), // clôture octobre
+    imp('a', '2026-10-30', -33.6),
+    imp('b', '2026-10-30', -12.99),
+    imp('nov', '2026-11-10', -1841.97),
+    { id: 'att', date: '2026-11-24', amount: -11.98, label: 'En attente', bucket: 'needs', source: 'manual', pending: true },
+  ];
+  const bal = accountBalance(d);
+  assert.equal(r2(bal.total), 476.84); // = le solde affiché par la banque, opération en attente comprise
+  assert.equal(r2(bal.pending), -11.98);
+  const rec = reconcile(d, '2026-11');
+  assert.equal(rec.start, '2026-10-29');
+  assert.equal(rec.openingDay, '2026-10-28');
+  assert.equal(r2(rec.opening), 466.62); // état initial retrouvé sans le saisir
+  assert.equal(r2(rec.estimated), 476.84);
+  assert.equal(r2(rec.elsewhere), -500); // le virement d'épargne de clôture est compté en octobre
+  assert.equal(r2(rec.sumOps), 510.22);
+  assert.equal(r2(rec.sumOps), r2(summarize(d, '2026-11').allSum)); // le rapprochement tombe juste
+  assert.equal(accountBalance(emptyData()), null);
+  assert.equal(reconcile(emptyData(), '2026-11'), null);
+});
+
+t('solde du compte : fusion (le plus récent gagne), données invalides ignorées', () => {
+  const a = normalize({ account: { date: '2026-11-20', balance: 100, _m: 1 } });
+  const b = normalize({ account: { date: '2026-11-24', balance: 488.82, _m: 2 } });
+  assert.equal(mergeData(a, b).account.balance, 488.82);
+  assert.equal(mergeData(b, a).account.balance, 488.82);
+  assert.equal(normalize({ account: { date: '2026-11-24' } }).account, null);
+  assert.equal(mergeData(normalize({}), b).account.balance, 488.82);
+});
+
+t('lecture du solde dans l’export : première ligne du jour le plus récent (fichier du plus récent au plus ancien)', () => {
+  const r = parseBoursorama(csv);
+  assert.equal(r.anchor.date, '2026-11-20');
+  assert.equal(r.anchor.balance, 1234.5);
+  const asc = [
+    { date: '2026-11-01', amount: -1, bal: 100 },
+    { date: '2026-11-02', amount: -2, bal: 98 },
+    { date: '2026-11-02', amount: -3, bal: 95 },
+  ];
+  assert.deepEqual(anchorOf(asc), { date: '2026-11-02', balance: 95 }); // ordre croissant : dernière ligne du jour
+  assert.equal(anchorOf([{ date: '2026-11-01', amount: -1, bal: null }]), null);
+});
+
+t('opération « en attente » : confirmée par l’import, garde sa catégorie', () => {
+  const d = emptyData();
+  d.transactions = [{ id: 'att', date: '2026-11-24', amount: -11.98, label: 'Cantine', bucket: 'needs', sub: 'Courses', source: 'manual', pending: true }];
+  const parsed = [
+    { date: '2026-11-25', amount: -11.98, label: 'CARTE 24/11 BOULANGERIE X', cat: '', parent: '', hint: '', account: '1' },
+    { date: '2026-11-25', amount: -50, label: 'AUTRE OPERATION', cat: '', parent: '', hint: '', account: '1' },
+  ];
+  const p = prepareImport(parsed, d);
+  assert.equal(p.confirmed, 1);
+  const f = p.fresh.find((x) => x.amount === -11.98);
+  assert.equal(f.replaces, 'att');
+  assert.equal(f.bucket, 'needs');
+  assert.equal(f.sub, 'Courses');
+  assert.equal(p.fresh.find((x) => x.amount === -50).replaces, undefined);
 });
 
 t('comparaison de versions', () => {

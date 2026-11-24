@@ -82,6 +82,7 @@ h1{font-size:22px;font-weight:700;margin:0;line-height:1.25}
 .bar>i{position:absolute;left:0;top:0;bottom:0;border-radius:7px}
 .bar>b{position:absolute;top:-4px;bottom:-4px;width:3px;border-radius:2px;background:var(--text)}
 .line{display:flex;justify-content:space-between;gap:8px}
+.line>span:last-child,.line>b:last-child{white-space:nowrap;text-align:right}
 .stack{display:flex;height:16px;border-radius:8px;overflow:hidden;background:var(--tint)}
 
 /* contrôles */

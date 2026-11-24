@@ -106,6 +106,8 @@ export function parseBoursorama(text) {
     idx[k] = j ?? -1;
   }
   idx.amount = amountIndex(head);
+  // Solde du compte après l'opération : « accountbalance » (ancien format) ou 2e colonne « Solde » (actuel)
+  const balIdx = head.indexOf('accountbalance') >= 0 ? head.indexOf('accountbalance') : head.lastIndexOf('solde') > idx.amount ? head.lastIndexOf('solde') : -1;
   const get = (r, k) => (idx[k] >= 0 ? r[idx[k]] ?? '' : '');
   const out = [];
   let skipped = 0;
@@ -124,10 +126,26 @@ export function parseBoursorama(text) {
       cat: get(r, 'cat').trim(),
       parent: get(r, 'parent').trim(),
       account: get(r, 'account').trim(),
+      bal: balIdx >= 0 ? parseAmount(r[balIdx] ?? '') : null,
     });
   }
-  return { ok: true, transactions: out, skipped };
+  return { ok: true, transactions: out, skipped, anchor: anchorOf(out) };
 }
+
+// Solde du compte à la date de la dernière opération du fichier. Le fichier est classé du plus récent au plus
+// ancien (ou l'inverse) : la ligne qui fait foi pour un jour est la plus récente de ce jour, c'est-à-dire la
+// première du fichier si l'ordre est décroissant, la dernière sinon.
+export function anchorOf(list) {
+  const withBal = list.filter((t) => t.bal !== null && t.bal !== undefined);
+  if (!withBal.length) return null;
+  const desc = list[0].date >= list[list.length - 1].date;
+  const max = withBal.reduce((m, t) => (t.date > m ? t.date : m), '');
+  const same = withBal.filter((t) => t.date === max);
+  const row = desc ? same[0] : same[same.length - 1];
+  return { date: max, balance: row.bal };
+}
+
+const daysBetween = (a, b) => Math.abs(new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000;
 
 // Pas d'identifiant d'opération chez la banque : empreinte + numéro d'occurrence.
 export function addHashes(list) {
@@ -191,6 +209,22 @@ export function prepareImport(list, data) {
     }
     fresh.push({ ...t, ...classify(t, data.rules) });
   }
+  // Opérations saisies « en attente de la banque » : confirmées par l'import (même montant, à quelques jours près).
+  // L'opération importée remplace la saisie et garde la catégorie déjà choisie.
+  const pendings = data.transactions.filter((t) => t.pending);
+  const usedPending = new Set();
+  let confirmed = 0;
+  for (const f of fresh) {
+    const m = pendings.find((p) => !usedPending.has(p.id) && Math.abs(p.amount - f.amount) < 0.005 && daysBetween(p.date, f.date) <= 7);
+    if (!m) continue;
+    usedPending.add(m.id);
+    f.replaces = m.id;
+    confirmed++;
+    if (m.bucket) {
+      f.bucket = m.bucket;
+      f.sub = m.sub || '';
+    }
+  }
   const groups = new Map();
   fresh.forEach((t, i) => {
     if (t.bucket) return;
@@ -201,5 +235,5 @@ export function prepareImport(list, data) {
     g.total += t.amount;
     g.idxs.push(i);
   });
-  return { fresh, dup, groups: [...groups.values()] };
+  return { fresh, dup, confirmed, groups: [...groups.values()] };
 }

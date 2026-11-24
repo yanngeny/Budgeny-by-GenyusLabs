@@ -86,6 +86,15 @@ export function setPeriod(ids, period) {
   return n;
 }
 
+// Retient le dernier solde du compte lu dans un export (le plus récent l'emporte).
+export function setAccount(anchor) {
+  if (!anchor || !Number.isFinite(anchor.balance)) return false;
+  if (data.account && data.account.date > anchor.date) return false;
+  data.account = { date: anchor.date, balance: anchor.balance, _m: Date.now() };
+  touch();
+  return true;
+}
+
 export function setSettings(patch) {
   data.settings = { ...data.settings, ...patch, _m: Date.now() };
   touch();

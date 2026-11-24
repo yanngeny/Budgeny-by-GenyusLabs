@@ -51,6 +51,7 @@ export function emptyData() {
     schema: SCHEMA,
     updatedAt: new Date().toISOString(),
     settings: defaultSettings(),
+    account: null, // { date, balance, _m } : dernier solde du compte connu (dernier export importé)
     rules: [],
     transactions: [],
     deleted: [],
@@ -66,6 +67,7 @@ export function normalize(d) {
     ...base,
     ...d,
     settings: { ...base.settings, ...s, targets: { ...base.settings.targets, ...(s.targets || {}) } },
+    account: d.account && d.account.date && Number.isFinite(d.account.balance) ? d.account : null,
     rules: Array.isArray(d.rules) ? d.rules : [],
     transactions: Array.isArray(d.transactions) ? d.transactions : [],
     deleted: Array.isArray(d.deleted) ? d.deleted : [],
@@ -83,6 +85,8 @@ function mergeRows(a, b, tomb) {
   return [...m.values()].filter((r) => (tomb.get(r.id) ?? -1) < (r._m || 0)).sort(byId);
 }
 
+const newerAccount = (x, y) => (!x ? y ?? null : !y ? x : y.date > x.date || (y.date === x.date && (y._m || 0) > (x._m || 0)) ? y : x);
+
 // Fusion « dernier écrit gagne » par ligne, suppressions conservées sous forme de tombstones.
 export function mergeData(a, b) {
   const tomb = new Map();
@@ -91,6 +95,7 @@ export function mergeData(a, b) {
   return {
     ...a,
     settings,
+    account: newerAccount(a.account, b.account),
     rules: mergeRows(a.rules, b.rules, tomb),
     transactions: mergeRows(a.transactions, b.transactions, tomb),
     deleted: [...tomb.entries()].map(([id, _m]) => ({ id, _m })).sort(byId),
@@ -101,6 +106,7 @@ export function mergeData(a, b) {
 export function fingerprint(d) {
   return JSON.stringify([
     d.settings,
+    d.account ?? null,
     [...d.rules].sort(byId),
     [...d.transactions].sort(byId),
     [...d.deleted].sort(byId),
@@ -169,6 +175,62 @@ export function suggestPay(d) {
   const top = inc.reduce((a, b) => (b.amount > a.amount ? b : a));
   const key = ruleKeyOf(top.label);
   return key ? { key, label: top.label, amount: top.amount } : null;
+}
+
+export const dayBefore = (iso) => {
+  const t = new Date(iso + 'T12:00:00');
+  t.setDate(t.getDate() - 1);
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+};
+
+const lastDayOf = (month) => {
+  const [y, m] = month.split('-').map(Number);
+  return `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
+};
+
+// Solde du compte : dernier solde connu (celui de l'export) + opérations saisies « en attente de la banque ».
+export function accountBalance(d) {
+  const a = d.account;
+  if (!a || !Number.isFinite(a.balance)) return null;
+  const pending = d.transactions.filter((t) => t.pending).reduce((s, t) => s + t.amount, 0);
+  return { exportBalance: a.balance, date: a.date, pending, total: a.balance + pending };
+}
+
+// Rapprochement avec la banque pour un mois budgétaire : relie « Somme des opérations » au solde du compte.
+// Le solde de n'importe quel jour passé se déduit du dernier solde connu et des opérations importées
+// (solde(J) = dernier solde − opérations après J) : aucun état initial à saisir.
+export function reconcile(d, month) {
+  const acc = accountBalance(d);
+  if (!acc) return null;
+  const per = periodFn(d);
+  const pays = paydays(d);
+  let start;
+  let end;
+  if (pays.length) {
+    const i = pays.findIndex((p) => cycleLabel(p.date) === month);
+    if (i < 0) return null;
+    start = pays[i].date;
+    end = pays[i + 1] ? dayBefore(pays[i + 1].date) : acc.date;
+  } else {
+    start = `${month}-01`;
+    end = lastDayOf(month);
+  }
+  if (end > acc.date) end = acc.date;
+  if (start > end) return null;
+  const bank = (t) => t.source === 'import'; // passées sur le compte
+  const onAccount = (t) => bank(t) || t.pending; // + en attente chez la banque
+  const after = (day) => d.transactions.filter((t) => bank(t) && t.date > day && t.date <= acc.date).reduce((s, t) => s + t.amount, 0);
+  const balanceAtEnd = (day) => d.account.balance - after(day);
+  const inWin = (t) => t.date >= start && t.date <= end;
+  const sum = (f) => d.transactions.filter(f).reduce((s, t) => s + t.amount, 0);
+  const opening = balanceAtEnd(dayBefore(start));
+  const closing = balanceAtEnd(end);
+  const pendingIn = sum((t) => t.pending && inWin(t));
+  const elsewhere = sum((t) => onAccount(t) && inWin(t) && per(t) !== month); // ex. virement d'épargne de clôture
+  const brought = sum((t) => onAccount(t) && !inWin(t) && per(t) === month); // opérations d'autres dates comptées ici
+  const cash = sum((t) => !onAccount(t) && per(t) === month); // hors banque (espèces…)
+  const estimated = closing + pendingIn;
+  return { start, end, openingDay: dayBefore(start), opening, closing, pendingIn, estimated, elsewhere, brought, cash, sumOps: estimated - opening - elsewhere + brought + cash };
 }
 
 export function monthsOf(d) {
