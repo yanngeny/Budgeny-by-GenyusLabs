@@ -28,7 +28,8 @@ const eur2 = (n) => eur(n, 2);
 const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const monthLabel = (k) => {
   const [y, m] = k.split('-');
-  return `${MONTHS[+m - 1]} ${y}`;
+  const name = MONTHS[+m - 1];
+  return `${name[0].toUpperCase()}${name.slice(1)} ${y}`;
 };
 const shiftMonth = (k, d) => {
   const [y, m] = k.split('-').map(Number);
