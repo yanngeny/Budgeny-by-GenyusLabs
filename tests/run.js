@@ -231,15 +231,7 @@ t('dépenses d’après-paye : détectées, sans toucher aux virements d’épar
   assert.deepEqual(ap.ops.map((o) => o.id).sort(), ['a', 'b', 'c']);
   assert.equal(Math.round(ap.total * 100) / 100, -512.47);
   assert.equal(afterPayday(d, '2026-11'), null); // pas de paye décalée vers novembre
-  // application via le store, puis le calcul suit
-  store.addMany([
-    { date: '2026-08-30', label: 'APRESPAYE1', amount: -20, bucket: 'needs' },
-    { date: '2026-08-30', label: 'APRESPAYE2', amount: -30, bucket: 'wants' },
-  ]);
-  const ids = store.get().transactions.filter((x) => x.label.startsWith('APRESPAYE')).map((x) => x.id);
-  assert.equal(store.setPeriod(ids, '2026-09'), 2);
-  assert.ok(store.get().transactions.filter((x) => ids.includes(x.id)).every((x) => x.period === '2026-09'));
-  for (const o of ap.ops) o.period = '2026-10';
+  for (const o of ap.ops) o.period = '2026-10'; // ce que fait setPeriod : le calcul suit
   const oct = summarize(d, '2026-10');
   assert.equal(Math.round(oct.spent.needs * 100) / 100, 502.72); // 486 + 6.72 déplacés + 10 déjà en octobre
   assert.equal(summarize(d, '2026-09').spent.needs, 80); // 'before' (50) + 'manual' (30)
@@ -324,6 +316,17 @@ t('règle : rattrape les opérations à classer de même libellé, pas les autre
   assert.equal(tx('MYSTERE SARL LYON').bucket, 'wants');
   assert.equal(tx('BOULANGER').bucket, '');
   assert.equal(tx('MYSTERE SARL').bucket, 'needs');
+});
+
+store.addMany([
+  { date: '2026-08-30', label: 'APRESPAYE1', amount: -20, bucket: 'needs' },
+  { date: '2026-08-30', label: 'APRESPAYE2', amount: -30, bucket: 'wants' },
+]);
+const ppIds = store.get().transactions.filter((x) => x.label.startsWith('APRESPAYE')).map((x) => x.id);
+const ppCount = store.setPeriod(ppIds, '2026-09');
+t('setPeriod : rattache plusieurs opérations à un mois en une seule écriture', () => {
+  assert.equal(ppCount, 2);
+  assert.ok(store.get().transactions.filter((x) => ppIds.includes(x.id)).every((x) => x.period === '2026-09'));
 });
 
 await storage.openBrowser('https://clients.boursobank.com/operations/generate/');
