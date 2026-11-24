@@ -99,7 +99,7 @@ function home() {
   const noFile = !sync.state.ref;
   return `${monthNav()}
 ${noFile ? `<div class="banner" data-act="go" data-v="set">${ic('settings')}<span class="grow">Choisis où enregistrer tes données (téléphone ou Google Drive)</span>${ic('right')}</div>` : ''}
-${s.base > 0 ? `<div class="card line"><div><div class="sm">Revenus</div><b style="font-size:19px">${eur(s.base)}</b></div><div style="text-align:right"><div class="sm">Reste ce mois</div><b style="font-size:19px">${eur(s.rest)}</b></div></div>` : `<div class="banner" data-act="go" data-v="set"><span class="grow">Renseigne tes revenus mensuels dans les réglages, ou importe ton salaire.</span>${ic('right')}</div>`}
+${s.base > 0 ? `<div class="card line tap" data-act="detail" style="cursor:pointer"><div><div class="sm">Revenus</div><b style="font-size:19px">${eur(s.base)}</b></div><div style="text-align:right"><div class="sm">Reste ce mois · détail ›</div><b style="font-size:19px">${eur(s.rest)}</b></div></div>` : `<div class="banner" data-act="go" data-v="set"><span class="grow">Renseigne tes revenus mensuels dans les réglages, ou importe ton salaire.</span>${ic('right')}</div>`}
 <div class="card" style="display:flex;flex-direction:column;gap:14px">${BUCKET_KEYS.map((k) => bucketBar(k, s, d)).join('')}</div>
 ${s.todo ? `<div class="banner" data-act="todo">${ic('list')}<span class="grow">${s.todo} opération${s.todo > 1 ? 's' : ''} à catégoriser</span>${ic('right')}</div>` : ''}
 ${recent.length ? `<b style="font-size:14px">Dernières opérations</b>${recent.map(opRow).join('')}` : `<div class="card"><b>Rien pour ce mois</b><div class="sm">Importe ton export BoursoBank ou ajoute une dépense avec le bouton +.</div></div>`}`;
@@ -183,6 +183,37 @@ ${I.groups.length ? `<b style="font-size:14px">À classer avant d’importer</b>
 <button class="btn" data-act="idoimport" style="margin-top:auto">Importer ${I.fresh.length} opération${I.fresh.length > 1 ? 's' : ''}${open ? ` (${open} resteront à classer)` : ''}</button>`;
 }
 
+function detailScreen() {
+  const d = store.get();
+  const s = summarize(d, U.month);
+  const sg = (n) => (n > 0.004 ? '+' : n < -0.004 ? '−' : '') + eur2(Math.abs(n));
+  const line = (l, v, o = {}) => `<div class="line" style="padding:5px 0;${o.b ? 'font-weight:600;' : ''}"><span>${l}</span><span${o.c ? ` style="color:var(--${o.c})"` : ''}>${v}</span></div>`;
+  const small = (t) => `<div class="sm" style="margin:2px 0 6px">${t}</div>`;
+  const day = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' });
+  const misc = [];
+  if (s.pending.count) misc.push(line(`${s.pending.count} opération${s.pending.count > 1 ? 's' : ''} à classer`, sg(s.pending.sum), { c: 'warn' }) + small(`Non déduites du reste. Reste si on les déduit : <b>${eur2(s.restIfPending)}</b>.`) + `<button class="chip" data-act="todo">Voir les opérations à classer</button>`);
+  if (s.ignored.count) misc.push(line(`${s.ignored.count} opération${s.ignored.count > 1 ? 's' : ''} ignorée${s.ignored.count > 1 ? 's' : ''}`, sg(s.ignored.sum)) + small('Classées « Ignoré » : exclues du calcul, mais elles ont bien bougé sur ton compte.'));
+  if (s.surplus > 0.004) misc.push(line('Retraits d’épargne non utilisés', eur2(s.surplus)) + small('Part des retraits supérieure aux dépenses qu’ils financent.'));
+  return `<div class="hd"><button class="ib" data-act="go" data-v="home" aria-label="Retour">${ic('back')}</button><b>Détail du calcul</b><span style="width:34px"></span></div>
+<div class="sm" style="text-align:center">${E(monthLabel(U.month))}</div>
+<div class="card">
+${line('Revenus', s.income > 0 ? sg(s.base) : `${sg(s.base)} <span class="sm">(réglage)</span>`)}
+${s.shiftedIn > 0.004 ? small(`dont ${eur2(s.shiftedIn)} reçus un autre mois et comptés ici`) : ''}
+${line('Besoins', sg(-s.net.needs))}${line('Envies', sg(-s.net.wants))}${line('Épargne versée', sg(-s.spent.savings))}
+<div class="sep" style="margin:4px 0"></div>
+${line('Reste ce mois', sg(s.rest), { b: 1 })}
+${s.covered.needs + s.covered.wants > 0.004 ? small(`Les ${eur2(s.covered.needs + s.covered.wants)} de dépenses financées par un retrait d’épargne ne sont pas déduits.`) : ''}
+</div>
+<div class="card"><b>Pas pris en compte</b>
+${misc.length ? misc.join('<div class="sep" style="margin:6px 0"></div>') : small('Rien : toutes les opérations du mois sont comptées.')}
+</div>
+<div class="card"><b>Pour comparer avec ta banque</b>
+${line('Somme de toutes les opérations', sg(s.allSum))}
+${small(`${s.count} opération${s.count > 1 ? 's' : ''}${s.lastDate ? ` · la plus récente : ${E(day(s.lastDate))}` : ''}`)}
+<div class="sm">Ce n’est pas le solde de ton compte. Il n’inclut ni l’argent déjà présent en début de période, ni les opérations restées dans le mois précédent (par exemple les dépenses du jour du salaire), ni celles « en cours de traitement » qui ne sont pas encore dans ton export.</div>
+</div>`;
+}
+
 function histScreen() {
   const d = store.get();
   const months = [...new Set([todayISO().slice(0, 7), ...monthsOf(d)])].sort().reverse().slice(0, 6);
@@ -231,11 +262,11 @@ function setScreen() {
 const NAV = [['home', 'home', 'Accueil'], ['ops', 'list', 'Opérations'], ['add'], ['hist', 'chart', 'Historique'], ['set', 'settings', 'Réglages']];
 
 function render() {
-  const screens = { home, add: addScreen, ops: opsScreen, edit: editScreen, import: importScreen, hist: histScreen, set: setScreen };
+  const screens = { home, detail: detailScreen, add: addScreen, ops: opsScreen, edit: editScreen, import: importScreen, hist: histScreen, set: setScreen };
   const hideNav = U.tab === 'add' || U.tab === 'edit';
   const nav = hideNav
     ? ''
-    : `<div class="nav">${NAV.map((n) => (n.length === 1 ? `<button class="fab" data-act="go" data-v="add" aria-label="Ajouter">${ic('plus')}</button>` : `<button class="nb ${U.tab === n[0] || (U.tab === 'import' && n[0] === 'ops') ? 'on' : ''}" data-act="go" data-v="${n[0]}">${ic(n[1])}${n[2]}</button>`)).join('')}</div>`;
+    : `<div class="nav">${NAV.map((n) => (n.length === 1 ? `<button class="fab" data-act="go" data-v="add" aria-label="Ajouter">${ic('plus')}</button>` : `<button class="nb ${U.tab === n[0] || (U.tab === 'import' && n[0] === 'ops') || (U.tab === 'detail' && n[0] === 'home') ? 'on' : ''}" data-act="go" data-v="${n[0]}">${ic(n[1])}${n[2]}</button>`)).join('')}</div>`;
   const keep = root.querySelector('.screen')?.scrollTop || 0;
   root.innerHTML = `<div class="screen">${screens[U.tab]()}</div>${nav}${U.flash ? `<div class="toast">${E(U.flash)}</div>` : ''}`;
   const sc = root.querySelector('.screen');
@@ -248,6 +279,7 @@ const ACT = {
     U.tab = v;
     if (v === 'add') U.add = { amt: '', type: 'out', bucket: 'wants', sub: 'Restau', note: '' };
   },
+  detail: () => (U.tab = 'detail'),
   month: (v) => (U.month = shiftMonth(U.month, +v)),
   gomonth: (v) => {
     U.month = v;

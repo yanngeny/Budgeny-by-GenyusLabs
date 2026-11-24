@@ -108,6 +108,7 @@ t('salaire versé en fin de mois : compté dans le mois suivant', () => {
   ];
   const nov = summarize(d, '2026-11');
   assert.equal(nov.income, 2000);
+  assert.equal(nov.shiftedIn, 2000); // le salaire du 28 octobre vient d'un autre mois
   assert.equal(nov.pct.needs, 50);
   assert.equal(summarize(d, '2026-10').income, 50);
   assert.equal(summarize(d, '2026-10').spent.needs, 80);
@@ -144,6 +145,27 @@ t('retrait d’épargne : la dépense financée ne pèse pas sur le budget du mo
   s = summarize(d, '2026-11');
   assert.equal(s.covered.wants, 0);
   assert.equal(s.net.needs, 1000);
+});
+
+t('détail du reste : opérations à classer, ignorées, retraits non utilisés, total de contrôle', () => {
+  const d = emptyData();
+  d.transactions = [
+    { id: '1', date: '2026-11-02', amount: 2000, bucket: 'income' },
+    { id: '2', date: '2026-11-05', amount: -800, bucket: 'needs' },
+    { id: '3', date: '2026-11-09', amount: -92.16, bucket: '' }, // pas encore classée
+    { id: '4', date: '2026-11-10', amount: -50, bucket: 'ignore' },
+    { id: '5', date: '2026-11-12', amount: 900, bucket: 'savings', sub: 'Retrait' }, // 100 de plus que la dépense
+  ];
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const s = summarize(d, '2026-11');
+  assert.equal(s.rest, 2000); // les besoins (800) sont financés par le retrait
+  assert.equal(s.pending.count, 1);
+  assert.equal(r2(s.pending.sum), -92.16);
+  assert.equal(r2(s.restIfPending), 1907.84);
+  assert.deepEqual(s.ignored, { count: 1, sum: -50 });
+  assert.equal(s.surplus, 100);
+  assert.equal(r2(s.allSum), 1957.84);
+  assert.equal(s.lastDate, '2026-11-12');
 });
 
 t('entrée depuis un compte d’épargne : retrait, pas un revenu', () => {

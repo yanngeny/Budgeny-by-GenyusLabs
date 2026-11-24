@@ -135,14 +135,29 @@ export function summarize(d, month) {
   const withdrawn = { needs: 0, wants: 0 };
   let income = 0;
   let todo = 0;
+  let todoSum = 0;
+  let shiftedIn = 0;
   let count = 0;
+  let allSum = 0;
+  let lastDate = '';
+  const ignored = { count: 0, sum: 0 };
   for (const t of d.transactions) {
     if (periodOf(t, d.settings) !== month) continue;
     count++;
-    if (t.bucket === 'income') income += t.amount;
-    else if (isWithdrawal(t)) withdrawn[t.covers === 'wants' ? 'wants' : 'needs'] += t.amount;
+    allSum += t.amount;
+    if (t.date > lastDate) lastDate = t.date;
+    if (t.bucket === 'income') {
+      income += t.amount;
+      if (t.date.slice(0, 7) !== month) shiftedIn += t.amount; // revenu reçu un autre mois, compté ici
+    } else if (isWithdrawal(t)) withdrawn[t.covers === 'wants' ? 'wants' : 'needs'] += t.amount;
     else if (t.bucket in spent) spent[t.bucket] -= t.amount;
-    else if (!t.bucket) todo++;
+    else if (t.bucket === 'ignore') {
+      ignored.count++;
+      ignored.sum += t.amount;
+    } else if (!t.bucket) {
+      todo++;
+      todoSum += t.amount;
+    }
   }
   // Une dépense financée par l'épargne ne pèse pas sur le budget courant : on la sépare (plafonnée à la dépense).
   const covered = { needs: Math.min(withdrawn.needs, Math.max(0, spent.needs)), wants: Math.min(withdrawn.wants, Math.max(0, spent.wants)) };
@@ -152,5 +167,25 @@ export function summarize(d, month) {
   for (const k of BUCKET_KEYS) pct[k] = base > 0 ? Math.round((net[k] / base) * 100) : 0;
   const total = net.needs + net.wants + net.savings;
   const withdrawnTotal = withdrawn.needs + withdrawn.wants;
-  return { income, base, spent, net, covered, withdrawn: withdrawnTotal, pct, total, rest: base - total, todo, count };
+  const rest = base - total;
+  return {
+    income,
+    shiftedIn,
+    base,
+    spent,
+    net,
+    covered,
+    withdrawn: withdrawnTotal,
+    surplus: withdrawnTotal - covered.needs - covered.wants, // retraits d'épargne au-delà de la dépense financée
+    pct,
+    total,
+    rest,
+    todo,
+    pending: { count: todo, sum: todoSum }, // opérations à classer : non déduites du reste
+    restIfPending: rest + todoSum,
+    ignored,
+    allSum, // somme brute de toutes les opérations de la période, à comparer avec la banque
+    lastDate,
+    count,
+  };
 }
