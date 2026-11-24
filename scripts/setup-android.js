@@ -13,7 +13,8 @@ if (!xml.includes('<queries>')) {
   const queries =
     '<queries><intent><action android:name="android.intent.action.VIEW"/>' +
     '<category android:name="android.intent.category.BROWSABLE"/>' +
-    '<data android:scheme="https"/></intent></queries>\n    <application';
+    '<data android:scheme="https"/></intent>' +
+    '<package android:name="com.boursorama.android.clients"/></queries>\n    <application';
   xml = xml.replace('<application', queries);
   writeFileSync(manifestPath, xml);
 }

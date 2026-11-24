@@ -27,6 +27,7 @@ export function todayISO() {
 
 export const BANK_URL = 'https://clients.boursobank.com/operations/generate/';
 const OLD_BANK_URL = 'https://clients.boursobank.com/';
+export const BANK_PKG = 'com.boursorama.android.clients';
 
 export function defaultSettings() {
   return {
@@ -34,6 +35,7 @@ export function defaultSettings() {
     targets: { needs: 50, wants: 30, savings: 20 },
     me: 'Moi',
     bankUrl: BANK_URL,
+    bankMode: 'app', // 'app' : ouvre l'appli BoursoBank (site web en secours), 'web' : le site
     _m: 0,
   };
 }

@@ -1,6 +1,8 @@
 // Tests sans dépendance : `node tests/run.js`
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { emptyData, normalize, mergeData, summarize, fingerprint } from '../js/model.js';
 import { parseBoursorama, prepareImport, parseAmount, parseDate, ruleKeyOf, classify } from '../js/csv.js';
 import { isNewer } from '../js/update.js';
@@ -11,6 +13,13 @@ const t = (name, fn) => {
   n++;
   console.log('ok  ' + name);
 };
+
+t('tous les fichiers js/ sont syntaxiquement valides', () => {
+  const dir = new URL('../js/', import.meta.url);
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.js'))) {
+    execFileSync(process.execPath, ['--check', fileURLToPath(new URL(f, dir))], { stdio: 'pipe' });
+  }
+});
 
 const csv = readFileSync(new URL('./fixtures/boursorama-sample.csv', import.meta.url), 'utf8');
 
@@ -106,6 +115,9 @@ const plugin = {
   write: async ({ text }) => {
     disk = text;
   },
+  openApp: async ({ package: pkg }) => {
+    if (pkg !== 'com.boursorama.android.clients') throw new Error('not_installed');
+  },
   openBrowser: async ({ url }) => {
     opened.push(url);
     if (failBrowser) throw new Error('boom');
@@ -155,6 +167,17 @@ t('pont natif : ouverture du navigateur, repli seulement si demandé', () => {
   assert.equal(opened[0], 'https://clients.boursobank.com/operations/generate/');
   assert.equal(window.location.href, 'https://github.com/x/y.apk');
   assert.equal(rejected, true);
+});
+
+const appOk = await storage.openApp('com.boursorama.android.clients');
+const appAbsent = await storage.openApp('com.exemple.absent');
+const M = await import('../js/model.js');
+t('lancement de l’appli BoursoBank (false si absente) et réglages par défaut', () => {
+  assert.equal(appOk, true);
+  assert.equal(appAbsent, false);
+  assert.equal(M.BANK_PKG, 'com.boursorama.android.clients');
+  assert.equal(M.defaultSettings().bankMode, 'app');
+  assert.equal(M.normalize({ settings: { bankUrl: 'https://clients.boursobank.com/' } }).settings.bankUrl, M.BANK_URL);
 });
 
 console.log(`\n${n} tests passés`);

@@ -2,7 +2,7 @@
 import * as store from './store.js';
 import * as sync from './sync.js';
 import * as storage from './storage.js';
-import { BUCKETS, BUCKET_KEYS, SUBS, bucketLabel, bucketColor, summarize, monthsOf, todayISO } from './model.js';
+import { BANK_PKG, BUCKETS, BUCKET_KEYS, SUBS, bucketLabel, bucketColor, summarize, monthsOf, todayISO } from './model.js';
 import { decodeBuffer, parseBoursorama, prepareImport, ruleKeyOf } from './csv.js';
 import { checkUpdate } from './update.js';
 import { VERSION } from './version.js';
@@ -153,10 +153,11 @@ ${key ? `<label class="chk"><input type="checkbox" data-in="always" ${U.edit.alw
 function importScreen() {
   const d = store.get();
   const I = U.imp;
-  const bank = `<button class="btn sec" data-act="bank">1 · Ouvrir BoursoBank dans le navigateur</button>`;
+  const web = d.settings.bankMode === 'web';
+  const bank = `<button class="btn sec" data-act="bank">1 · Ouvrir ${web ? 'le site' : 'l’appli'} BoursoBank</button>`;
   if (!I) {
     return `<div class="hd"><button class="ib" data-act="go" data-v="ops" aria-label="Retour">${ic('back')}</button><b>Importer un export</b><span style="width:34px"></span></div>
-<div class="card sm">Sur le site BoursoBank : ouvre ton compte, affiche les mouvements de la période voulue, puis exporte-les au format CSV. Reviens ici ensuite.</div>
+<div class="card sm">${web ? 'Sur le site BoursoBank : ouvre ton compte, affiche les mouvements de la période voulue, puis exporte-les au format CSV.' : 'Dans l’appli BoursoBank : utilise la loupe pour choisir la période voulue, puis exporte les opérations au format CSV.'} Reviens ici ensuite.</div>
 ${bank}<button class="btn" data-act="pickcsv">2 · Choisir le fichier CSV</button>`;
   }
   if (I.error) {
@@ -205,7 +206,9 @@ function setScreen() {
 <div class="sm" style="margin:6px 0 4px">Revenus mensuels (si aucun salaire importé)</div><input type="number" inputmode="decimal" data-in="income" value="${d.settings.income || ''}" placeholder="2400">
 <div class="sm" style="margin:10px 0 4px">Cibles en % : besoins / envies / épargne</div>
 <div class="chips" style="flex-wrap:nowrap">${BUCKET_KEYS.map((k) => `<input type="number" inputmode="numeric" data-in="t-${k}" value="${T[k]}" aria-label="${BUCKETS[k].label}">`).join('')}</div></div>
-<div class="card"><b>BoursoBank</b><div class="sm" style="margin:6px 0 4px">Page ouverte par le bouton d’export</div><input type="text" data-in="bankurl" value="${E(d.settings.bankUrl)}"></div>
+<div class="card"><b>BoursoBank</b><div class="sm" style="margin:6px 0 8px">Le bouton d’export ouvre :</div>
+<div class="chips"><button class="chip f ${d.settings.bankMode !== 'web' ? 'on' : ''}" data-act="bankmode" data-v="app">L’appli</button><button class="chip f ${d.settings.bankMode === 'web' ? 'on' : ''}" data-act="bankmode" data-v="web">Le site web</button></div>
+<div class="sm" style="margin:10px 0 4px">Adresse du site (mode « site web » ou si l’appli est absente)</div><input type="text" data-in="bankurl" value="${E(d.settings.bankUrl)}"></div>
 <div class="card"><b>Version ${E(VERSION)}</b>
 <div class="sm" style="margin:4px 0 8px">${!upd ? 'Vérifie s’il existe une nouvelle version sur GitHub.' : upd.state === 'checking' ? 'Vérification…' : upd.state === 'error' ? E(upd.msg) : upd.newer ? `Version ${E(upd.version)} disponible.` : 'Tu as la dernière version.'}</div>
 <div class="chips"><button class="chip" data-act="checkupd">Vérifier</button>${upd?.newer ? '<button class="chip on" data-act="getupd">Télécharger</button>' : ''}</div></div>`;
@@ -291,7 +294,15 @@ const ACT = {
     flash('Supprimée');
   },
   pickcsv: () => document.getElementById('csv').click(),
-  bank: () => storage.openBrowser(store.get().settings.bankUrl).catch((e) => flash(e.message || 'Ouverture impossible')),
+  bank: async () => {
+    const s = store.get().settings;
+    if (s.bankMode !== 'web') {
+      if (await storage.openApp(BANK_PKG)) return;
+      flash('Appli BoursoBank introuvable : ouverture du site');
+    }
+    await storage.openBrowser(s.bankUrl).catch((e) => flash(e?.message || 'Ouverture impossible'));
+  },
+  bankmode: (v) => store.setSettings({ bankMode: v }),
   iclose: () => (U.imp = null),
   ibucket: (v) => {
     const [i, b] = v.split(':');

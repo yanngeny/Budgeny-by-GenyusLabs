@@ -66,6 +66,18 @@ export async function write(ref, text) {
   await w.close();
 }
 
+// Lance une appli installée ; renvoie false si elle est absente ou si on n'est pas sur Android.
+export async function openApp(pkg) {
+  const p = plug();
+  if (!p) return false;
+  try {
+    await p.openApp({ package: pkg });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Ouvre une page dans le navigateur, sans passer par l'appli de la banque.
 // fallback: en cas d'échec du plugin, laisse Android ouvrir le lien lui-même (téléchargements GitHub).
 export async function openBrowser(url, { fallback = false } = {}) {

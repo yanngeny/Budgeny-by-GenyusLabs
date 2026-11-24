@@ -149,6 +149,28 @@ public class BudgenyFilePlugin extends Plugin {
         }
     }
 
+    /** Lance une autre appli installée (ex. l'appli de la banque) par son nom de package. */
+    @PluginMethod
+    public void openApp(PluginCall call) {
+        String pkg = call.getString("package");
+        if (pkg == null) {
+            call.reject("package manquant");
+            return;
+        }
+        Intent launch = getContext().getPackageManager().getLaunchIntentForPackage(pkg);
+        if (launch == null) {
+            call.reject("not_installed");
+            return;
+        }
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            getContext().startActivity(launch);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Lancement impossible : " + e.getClass().getSimpleName() + " " + e.getMessage());
+        }
+    }
+
     private String displayName(Uri uri) {
         try (Cursor c = getContext().getContentResolver().query(uri, null, null, null, null)) {
             if (c != null && c.moveToFirst()) {
