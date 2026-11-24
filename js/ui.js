@@ -2,7 +2,7 @@
 import * as store from './store.js';
 import * as sync from './sync.js';
 import * as storage from './storage.js';
-import { BANK_PKG, BUCKETS, BUCKET_KEYS, SUBS, bucketLabel, bucketColor, summarize, monthsOf, todayISO } from './model.js';
+import { BANK_PKG, BUCKETS, BUCKET_KEYS, SUBS, bucketLabel, bucketColor, summarize, monthsOf, todayISO, shiftMonth, periodOf } from './model.js';
 import { decodeBuffer, parseBoursorama, prepareImport, ruleKeyOf } from './csv.js';
 import { isZip, unzipFirst } from './zip.js';
 import { checkUpdate } from './update.js';
@@ -31,11 +31,6 @@ const monthLabel = (k) => {
   const [y, m] = k.split('-');
   const name = MONTHS[+m - 1];
   return `${name[0].toUpperCase()}${name.slice(1)} ${y}`;
-};
-const shiftMonth = (k, d) => {
-  const [y, m] = k.split('-').map(Number);
-  const t = new Date(y, m - 1 + d, 1);
-  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`;
 };
 function dayLabel(iso) {
   const today = todayISO();
@@ -73,7 +68,9 @@ const monthNav = () => `<div class="hd"><button class="ib" data-act="month" data
 
 function opRow(t) {
   const c = bucketColor(t.bucket);
-  const sub = [bucketLabel(t.bucket), t.sub].filter(Boolean).join(' · ');
+  const per = periodOf(t, store.get().settings);
+  const shifted = per !== t.date.slice(0, 7) ? `compté en ${monthLabel(per).split(' ')[0].toLowerCase()}` : '';
+  const sub = [bucketLabel(t.bucket), t.sub, shifted].filter(Boolean).join(' · ');
   return `<div class="row tap" data-act="edit" data-v="${E(t.id)}"><div class="dot" style="background:${c}33;color:${c}">${E((t.label[0] || '?').toUpperCase())}</div><div class="grow"><div>${E(t.label)}</div><div class="sm">${E(sub)}</div></div><div class="amt ${t.amount > 0 ? 'pos' : ''}">${t.amount > 0 ? '+' : ''}${eur2(t.amount).replace('-', '−')}</div></div>`;
 }
 
@@ -91,7 +88,7 @@ function bucketBar(k, s, d) {
 function home() {
   const d = store.get();
   const s = summarize(d, U.month);
-  const recent = d.transactions.filter((t) => t.date.startsWith(U.month)).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 5);
+  const recent = d.transactions.filter((t) => periodOf(t, d.settings) === U.month).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 5);
   const noFile = !sync.state.ref;
   return `${monthNav()}
 ${noFile ? `<div class="banner" data-act="go" data-v="set">${ic('settings')}<span class="grow">Choisis où enregistrer tes données (téléphone ou Google Drive)</span>${ic('right')}</div>` : ''}
@@ -117,7 +114,7 @@ ${A.type === 'out' ? `<div class="chips">${BUCKET_KEYS.map((b) => `<button class
 function opsScreen() {
   const d = store.get();
   const F = [['all', 'Tout'], ['needs', 'Besoins'], ['wants', 'Envies'], ['savings', 'Épargne'], ['todo', 'À classer']];
-  let list = d.transactions.filter((t) => t.date.startsWith(U.month));
+  let list = d.transactions.filter((t) => periodOf(t, d.settings) === U.month);
   if (U.filter === 'todo') list = list.filter((t) => !t.bucket);
   else if (U.filter !== 'all') list = list.filter((t) => t.bucket === U.filter);
   list.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
@@ -147,6 +144,12 @@ function editScreen() {
 <b style="font-size:14px">Catégorie</b>
 <div class="chips">${all.map((b) => `<button class="chip ${t.bucket === b ? 'on' : ''}" data-act="ebucket" data-v="${b}">${bucketLabel(b)}</button>`).join('')}</div>
 ${SUBS[t.bucket] ? `<div class="chips">${SUBS[t.bucket].map((x) => `<button class="chip ${t.sub === x ? 'on' : ''}" data-act="esub" data-v="${E(x)}">${E(x)}</button>`).join('')}</div>` : ''}
+${t.bucket === 'income' ? (() => {
+    const base = t.date.slice(0, 7);
+    const cur = t.period || 'auto';
+    const opts = [['auto', 'Automatique'], [shiftMonth(base, -1), monthLabel(shiftMonth(base, -1))], [base, monthLabel(base)], [shiftMonth(base, 1), monthLabel(shiftMonth(base, 1))]];
+    return `<b style="font-size:14px">Compté dans le budget de</b><div class="chips">${opts.map(([v, l]) => `<button class="chip ${cur === v ? 'on' : ''}" data-act="eperiod" data-v="${v}">${E(l)}</button>`).join('')}</div>`;
+  })() : ''}
 ${key ? `<label class="chk"><input type="checkbox" data-in="always" ${U.edit.always ? 'checked' : ''}> Toujours classer « ${E(key)} » ainsi</label>` : ''}
 <button class="btn dng" data-act="edel">Supprimer l’opération</button>`;
 }
@@ -205,6 +208,7 @@ function setScreen() {
 <div class="chips"><button class="chip" data-act="pickfile" data-v="new">Créer un fichier</button><button class="chip" data-act="pickfile" data-v="open">Ouvrir un fichier existant</button>${S.ref ? '<button class="chip" data-act="syncnow">Synchroniser</button>' : ''}</div></div>
 <div class="card"><b>Budget</b>
 <div class="sm" style="margin:6px 0 4px">Revenus mensuels (si aucun salaire importé)</div><input type="number" inputmode="decimal" data-in="income" value="${d.settings.income || ''}" placeholder="2400">
+<div class="sm" style="margin:10px 0 4px">Revenus reçus à partir du jour … : comptés dans le mois suivant (0 = désactivé)</div><input type="number" inputmode="numeric" min="0" max="31" data-in="shiftday" value="${d.settings.incomeShiftDay || 0}">
 <div class="sm" style="margin:10px 0 4px">Cibles en % : besoins / envies / épargne</div>
 <div class="chips" style="flex-wrap:nowrap">${BUCKET_KEYS.map((k) => `<input type="number" inputmode="numeric" data-in="t-${k}" value="${T[k]}" aria-label="${BUCKETS[k].label}">`).join('')}</div></div>
 <div class="card"><b>BoursoBank</b><div class="sm" style="margin:6px 0 8px">Le bouton d’export ouvre :</div>
@@ -291,6 +295,7 @@ const ACT = {
     }
   },
   esub: (v) => store.updateTx(U.edit.id, { sub: v }),
+  eperiod: (v) => store.updateTx(U.edit.id, { period: v === 'auto' ? '' : v }),
   edel: () => {
     if (!window.confirm('Supprimer cette opération ?')) return;
     store.deleteTx(U.edit.id);
@@ -358,6 +363,7 @@ function onChange(el) {
   const k = el.dataset.in;
   const d = store.get();
   if (k === 'income') store.setSettings({ income: Math.max(0, parseFloat(el.value) || 0) });
+  else if (k === 'shiftday') store.setSettings({ incomeShiftDay: Math.min(31, Math.max(0, parseInt(el.value, 10) || 0)) });
   else if (k?.startsWith('t-')) store.setSettings({ targets: { ...d.settings.targets, [k.slice(2)]: Math.max(0, parseInt(el.value, 10) || 0) } });
   else if (k === 'bankurl') store.setSettings({ bankUrl: /^https:\/\//.test(el.value.trim()) ? el.value.trim() : d.settings.bankUrl });
   else if (k === 'always') U.edit.always = el.checked;

@@ -96,6 +96,29 @@ t('summarize : 50/30/20', () => {
   assert.equal(s.todo, 1);
 });
 
+t('salaire versé en fin de mois : compté dans le mois suivant', () => {
+  const d = emptyData();
+  d.settings.incomeShiftDay = 25;
+  d.transactions = [
+    { id: 'a', date: '2026-10-28', amount: 2000, bucket: 'income' }, // -> novembre
+    { id: 'b', date: '2026-11-03', amount: -1000, bucket: 'needs' },
+    { id: 'c', date: '2026-10-10', amount: 50, bucket: 'income' }, // avant le jour 25 : reste en octobre
+    { id: 'd', date: '2026-12-29', amount: 2000, bucket: 'income' }, // -> janvier 2027
+    { id: 'e', date: '2026-10-30', amount: -80, bucket: 'needs' }, // dépense : jamais décalée
+  ];
+  const nov = summarize(d, '2026-11');
+  assert.equal(nov.income, 2000);
+  assert.equal(nov.pct.needs, 50);
+  assert.equal(summarize(d, '2026-10').income, 50);
+  assert.equal(summarize(d, '2026-10').spent.needs, 80);
+  assert.equal(summarize(d, '2027-01').income, 2000);
+  d.transactions[0].period = '2026-10'; // forcé à la main
+  assert.equal(summarize(d, '2026-10').income, 2050);
+  d.settings.incomeShiftDay = 0; // désactivé
+  d.transactions[3].period = '';
+  assert.equal(summarize(d, '2026-12').income, 2000);
+});
+
 t('comparaison de versions', () => {
   assert.equal(isNewer('v0.2.0', '0.1.9'), true);
   assert.equal(isNewer('0.1.0', '0.1.0'), false);

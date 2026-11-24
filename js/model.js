@@ -35,6 +35,7 @@ export function defaultSettings() {
     targets: { needs: 50, wants: 30, savings: 20 },
     me: 'Moi',
     bankUrl: BANK_URL,
+    incomeShiftDay: 0, // 0 = désactivé ; ex. 25 : un revenu reçu à partir du 25 compte pour le mois suivant
     bankMode: 'app', // 'app' : ouvre l'appli BoursoBank (site web en secours), 'web' : le site
     _m: 0,
   };
@@ -103,8 +104,24 @@ export function fingerprint(d) {
   ]);
 }
 
+export function shiftMonth(k, delta) {
+  const [y, m] = k.split('-').map(Number);
+  const t = new Date(y, m - 1 + delta, 1);
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Mois budgétaire d'une opération. Un revenu reçu à partir du jour `incomeShiftDay` (ex. salaire versé le 28)
+// compte pour le mois suivant ; `t.period` (AAAA-MM) force un mois précis.
+export function periodOf(t, settings) {
+  if (t.period) return t.period;
+  const month = t.date.slice(0, 7);
+  const shift = Number(settings?.incomeShiftDay) || 0;
+  if (t.bucket === 'income' && shift > 0 && Number(t.date.slice(8, 10)) >= shift) return shiftMonth(month, 1);
+  return month;
+}
+
 export function monthsOf(d) {
-  return [...new Set(d.transactions.map((t) => t.date.slice(0, 7)))].sort().reverse();
+  return [...new Set(d.transactions.map((t) => periodOf(t, d.settings)))].sort().reverse();
 }
 
 export function summarize(d, month) {
@@ -113,7 +130,7 @@ export function summarize(d, month) {
   let todo = 0;
   let count = 0;
   for (const t of d.transactions) {
-    if (!t.date.startsWith(month)) continue;
+    if (periodOf(t, d.settings) !== month) continue;
     count++;
     if (t.bucket === 'income') income += t.amount;
     else if (t.bucket in spent) spent[t.bucket] -= t.amount;
