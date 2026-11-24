@@ -332,7 +332,7 @@ const ACT = {
       U.upd = { state: 'error', msg: e.message || 'Vérification impossible' };
     }
   },
-  getupd: () => storage.openBrowser(U.upd.url).catch(() => flash('Ouverture impossible')),
+  getupd: () => storage.openBrowser(U.upd.url, { fallback: true }).catch((e) => flash(`Ouverture impossible : ${e?.message || e}`)),
 };
 
 function onInput(el) {

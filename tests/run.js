@@ -90,4 +90,71 @@ t('comparaison de versions', () => {
   assert.equal(isNewer('0.1.0', '0.1.0'), false);
 });
 
+t('version.js et package.json sont alignés', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const ver = readFileSync(new URL('../js/version.js', import.meta.url), 'utf8').match(/VERSION = '([^']+)'/)[1];
+  assert.equal(ver, pkg.version);
+});
+
+// --- Pont natif simulé : Capacitor SANS registerPlugin, comme dans l'APK (pas de bundler) ---
+let disk = '';
+let failBrowser = false;
+const opened = [];
+const plugin = {
+  pick: async () => ({ uri: 'content://fake/Budgeny_data.json', name: 'Budgeny_data.json' }),
+  read: async () => ({ text: disk }),
+  write: async ({ text }) => {
+    disk = text;
+  },
+  openBrowser: async ({ url }) => {
+    opened.push(url);
+    if (failBrowser) throw new Error('boom');
+  },
+};
+const mem = new Map();
+Object.defineProperty(globalThis, 'localStorage', {
+  configurable: true,
+  writable: true,
+  value: {
+    getItem: (k) => mem.get(k) ?? null,
+    setItem: (k, v) => mem.set(k, String(v)),
+    removeItem: (k) => mem.delete(k),
+  },
+});
+globalThis.window = { Capacitor: { isNativePlatform: () => true, Plugins: { BudgenyFile: plugin } }, location: { href: '' }, open() {} };
+
+const storage = await import('../js/storage.js');
+const sync = await import('../js/sync.js');
+const store = await import('../js/store.js');
+
+t('pont natif : le plugin est trouvé via Capacitor.Plugins', () => {
+  assert.equal(storage.isNative(), true);
+});
+
+await sync.choose(true);
+t('pont natif : créer le fichier initial écrit un JSON Budgeny', () => {
+  assert.equal(sync.state.status, 'ok');
+  assert.equal(sync.state.ref.kind, 'saf');
+  assert.equal(JSON.parse(disk).app, 'budgeny');
+});
+
+store.load();
+store.addTx({ date: '2026-11-24', label: 'Test', amount: -3, bucket: 'wants' });
+await sync.now();
+t('pont natif : une action locale est écrite dans le fichier', () => {
+  assert.equal(JSON.parse(disk).transactions.length, 1);
+  assert.equal(sync.state.status, 'ok');
+});
+
+await storage.openBrowser('https://clients.boursobank.com/operations/generate/');
+failBrowser = true;
+await storage.openBrowser('https://github.com/x/y.apk', { fallback: true });
+let rejected = false;
+await storage.openBrowser('https://clients.boursobank.com/', {}).catch(() => (rejected = true));
+t('pont natif : ouverture du navigateur, repli seulement si demandé', () => {
+  assert.equal(opened[0], 'https://clients.boursobank.com/operations/generate/');
+  assert.equal(window.location.href, 'https://github.com/x/y.apk');
+  assert.equal(rejected, true);
+});
+
 console.log(`\n${n} tests passés`);

@@ -144,7 +144,7 @@ public class BudgenyFilePlugin extends Plugin {
                 getContext().startActivity(view);
                 call.resolve();
             } catch (Exception e2) {
-                call.reject("Ouverture impossible : " + e2.getMessage());
+                call.reject("Ouverture impossible : " + e2.getClass().getSimpleName() + " " + e2.getMessage());
             }
         }
     }

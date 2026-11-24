@@ -67,8 +67,17 @@ export async function write(ref, text) {
 }
 
 // Ouvre une page dans le navigateur, sans passer par l'appli de la banque.
-export async function openBrowser(url) {
+// fallback: en cas d'échec du plugin, laisse Android ouvrir le lien lui-même (téléchargements GitHub).
+export async function openBrowser(url, { fallback = false } = {}) {
   const p = plug();
-  if (p) return p.openBrowser({ url });
+  if (p) {
+    try {
+      return await p.openBrowser({ url });
+    } catch (e) {
+      if (!fallback) throw e;
+      window.location.href = url;
+      return;
+    }
+  }
   window.open(url, '_blank', 'noopener');
 }
