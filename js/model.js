@@ -25,12 +25,15 @@ export function todayISO() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+export const BANK_URL = 'https://clients.boursobank.com/operations/generate/';
+const OLD_BANK_URL = 'https://clients.boursobank.com/';
+
 export function defaultSettings() {
   return {
     income: 0,
     targets: { needs: 50, wants: 30, savings: 20 },
     me: 'Moi',
-    bankUrl: 'https://clients.boursobank.com/',
+    bankUrl: BANK_URL,
     _m: 0,
   };
 }
@@ -51,7 +54,8 @@ export function emptyData() {
 export function normalize(d) {
   const base = emptyData();
   if (!d || typeof d !== 'object') return base;
-  const s = d.settings || {};
+  const s = { ...(d.settings || {}) };
+  if (s.bankUrl === OLD_BANK_URL) s.bankUrl = BANK_URL; // ancien défaut -> nouveau lien
   return {
     ...base,
     ...d,
