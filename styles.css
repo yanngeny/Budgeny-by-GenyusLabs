@@ -31,7 +31,7 @@ button,input{font-family:inherit}
 .nb.on{color:var(--brand-ink)}
 .nb.on .nbi{background:var(--brand-soft)}
 .ic{width:22px;height:22px}
-.fab{width:54px;height:54px;margin-top:-22px;border-radius:50%;border:4px solid var(--bg);background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 6px 16px rgba(29,158,117,.35);transition:transform .12s}
+.fab{width:50px;height:50px;margin:0 6px;flex:none;border-radius:50%;border:0;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 3px 10px rgba(29,158,117,.35);transition:transform .12s}
 .fab:active{transform:scale(.94)}
 .fab .ic{width:26px;height:26px;stroke-width:2.4}
 
