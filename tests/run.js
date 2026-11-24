@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { deflateRawSync } from 'node:zlib';
 import { isZip, unzipFirst } from '../js/zip.js';
 import { fileURLToPath } from 'node:url';
-import { emptyData, normalize, mergeData, summarize, fingerprint } from '../js/model.js';
+import { emptyData, normalize, mergeData, summarize, fingerprint, afterPayday } from '../js/model.js';
 import { parseBoursorama, prepareImport, parseAmount, parseDate, ruleKeyOf, classify, decodeBuffer } from '../js/csv.js';
 import { isNewer } from '../js/update.js';
 
@@ -210,6 +210,39 @@ t('mois choisi à la main pour n’importe quelle opération (virement de clôtu
   assert.equal(oct.spent.wants, 10);
   assert.equal(Math.round(nov.spent.needs * 100) / 100, 46.59);
   assert.equal(nov.spent.savings, 0);
+});
+
+t('dépenses d’après-paye : détectées, sans toucher aux virements d’épargne ni aux choix manuels', () => {
+  const d = emptyData();
+  d.settings.incomeShiftDay = 28;
+  d.transactions = [
+    { id: 'pay', date: '2026-09-29', amount: 2543.99, bucket: 'income' },
+    { id: 'small', date: '2026-09-29', amount: 9, bucket: 'income' },
+    { id: 'sweep', date: '2026-09-29', amount: -500, bucket: 'savings', sub: 'Livret' }, // clôture septembre
+    { id: 'a', date: '2026-09-30', amount: -486, bucket: 'needs' },
+    { id: 'b', date: '2026-09-30', amount: -19.75, bucket: 'wants' },
+    { id: 'c', date: '2026-09-29', amount: -6.72, bucket: 'needs' },
+    { id: 'before', date: '2026-09-15', amount: -50, bucket: 'needs' }, // avant la paye
+    { id: 'manual', date: '2026-09-30', amount: -30, bucket: 'needs', period: '2026-09' }, // choix manuel respecté
+    { id: 'other', date: '2026-10-05', amount: -10, bucket: 'needs' }, // autre mois
+  ];
+  const ap = afterPayday(d, '2026-10');
+  assert.equal(ap.pay.id, 'pay');
+  assert.deepEqual(ap.ops.map((o) => o.id).sort(), ['a', 'b', 'c']);
+  assert.equal(Math.round(ap.total * 100) / 100, -512.47);
+  assert.equal(afterPayday(d, '2026-11'), null); // pas de paye décalée vers novembre
+  // application via le store, puis le calcul suit
+  store.addMany([
+    { date: '2026-08-30', label: 'APRESPAYE1', amount: -20, bucket: 'needs' },
+    { date: '2026-08-30', label: 'APRESPAYE2', amount: -30, bucket: 'wants' },
+  ]);
+  const ids = store.get().transactions.filter((x) => x.label.startsWith('APRESPAYE')).map((x) => x.id);
+  assert.equal(store.setPeriod(ids, '2026-09'), 2);
+  assert.ok(store.get().transactions.filter((x) => ids.includes(x.id)).every((x) => x.period === '2026-09'));
+  for (const o of ap.ops) o.period = '2026-10';
+  const oct = summarize(d, '2026-10');
+  assert.equal(Math.round(oct.spent.needs * 100) / 100, 502.72); // 486 + 6.72 déplacés + 10 déjà en octobre
+  assert.equal(summarize(d, '2026-09').spent.needs, 80); // 'before' (50) + 'manual' (30)
 });
 
 t('comparaison de versions', () => {

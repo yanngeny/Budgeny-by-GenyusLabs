@@ -70,6 +70,22 @@ export function deleteTx(id) {
   touch();
 }
 
+// Rattache plusieurs opérations à un mois budgétaire (AAAA-MM) en une seule écriture.
+export function setPeriod(ids, period) {
+  const set = new Set(ids);
+  const now = Date.now();
+  let n = 0;
+  for (const t of data.transactions) {
+    if (set.has(t.id)) {
+      t.period = period;
+      t._m = now;
+      n++;
+    }
+  }
+  if (n) touch();
+  return n;
+}
+
 export function setSettings(patch) {
   data.settings = { ...data.settings, ...patch, _m: Date.now() };
   touch();

@@ -120,6 +120,19 @@ export function periodOf(t, settings) {
   return month;
 }
 
+// Dépenses faites à partir du jour de la paye mais encore comptées dans le mois précédent.
+// La paye du mois `month` = le plus gros revenu reçu le mois d'avant et compté ici. Les virements
+// d'épargne (qui clôturent l'ancien mois) et les opérations dont le mois a été choisi à la main sont laissés.
+export function afterPayday(d, month) {
+  const prev = shiftMonth(month, -1);
+  const shifted = d.transactions.filter((t) => t.bucket === 'income' && t.date.slice(0, 7) === prev && periodOf(t, d.settings) === month);
+  if (!shifted.length) return null;
+  const pay = shifted.reduce((a, b) => (b.amount > a.amount ? b : a));
+  const ops = d.transactions.filter((t) => !t.period && t.date.slice(0, 7) === prev && t.date >= pay.date && t.amount < 0 && (t.bucket === 'needs' || t.bucket === 'wants'));
+  if (!ops.length) return null;
+  return { pay, from: prev, ops: ops.sort((a, b) => (a.date < b.date ? -1 : 1)), total: ops.reduce((s, t) => s + t.amount, 0) };
+}
+
 export function monthsOf(d) {
   return [...new Set(d.transactions.map((t) => periodOf(t, d.settings)))].sort().reverse();
 }

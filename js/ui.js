@@ -2,7 +2,7 @@
 import * as store from './store.js';
 import * as sync from './sync.js';
 import * as storage from './storage.js';
-import { BANK_PKG, BUCKETS, BUCKET_KEYS, SUBS, bucketLabel, bucketColor, summarize, monthsOf, todayISO, shiftMonth, periodOf, isWithdrawal, RETRAIT } from './model.js';
+import { BANK_PKG, BUCKETS, BUCKET_KEYS, SUBS, bucketLabel, bucketColor, summarize, monthsOf, todayISO, shiftMonth, periodOf, isWithdrawal, RETRAIT, afterPayday } from './model.js';
 import { decodeBuffer, parseBoursorama, prepareImport, ruleKeyOf } from './csv.js';
 import { isZip, unzipFirst } from './zip.js';
 import { checkUpdate } from './update.js';
@@ -32,6 +32,8 @@ const monthLabel = (k) => {
   const name = MONTHS[+m - 1];
   return `${name[0].toUpperCase()}${name.slice(1)} ${y}`;
 };
+const monthName = (k) => monthLabel(k).split(' ')[0].toLowerCase();
+const de = (mois) => `${/^[aeiouéèhô]/.test(mois) ? 'd’' : 'de '}${mois}`; // « d’octobre », « de novembre »
 function dayLabel(iso) {
   const today = todayISO();
   if (iso === today) return 'Aujourd’hui';
@@ -95,12 +97,14 @@ function bucketBar(k, s, d) {
 function home() {
   const d = store.get();
   const s = summarize(d, U.month);
-  const recent = d.transactions.filter((t) => periodOf(t, d.settings) === U.month).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 5);
+  const ap = afterPayday(d, U.month);
+  const recent =d.transactions.filter((t) => periodOf(t, d.settings) === U.month).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 5);
   const noFile = !sync.state.ref;
   return `${monthNav()}
 ${noFile ? `<div class="banner" data-act="go" data-v="set">${ic('settings')}<span class="grow">Choisis où enregistrer tes données (téléphone ou Google Drive)</span>${ic('right')}</div>` : ''}
 ${s.base > 0 ? `<div class="card line tap" data-act="detail" style="cursor:pointer"><div><div class="sm">Revenus</div><b style="font-size:19px">${eur(s.base)}</b></div><div style="text-align:right"><div class="sm">Reste ce mois · détail ›</div><b style="font-size:19px">${eur(s.rest)}</b></div></div>` : `<div class="banner" data-act="go" data-v="set"><span class="grow">Renseigne tes revenus mensuels dans les réglages, ou importe ton salaire.</span>${ic('right')}</div>`}
 <div class="card" style="display:flex;flex-direction:column;gap:14px">${BUCKET_KEYS.map((k) => bucketBar(k, s, d)).join('')}</div>
+${ap ? `<div class="banner" data-act="detail"><span class="grow">${ap.ops.length} dépense${ap.ops.length > 1 ? 's' : ''} d’après-paye (${eur2(Math.abs(ap.total))}) comptée${ap.ops.length > 1 ? 's' : ''} en ${monthName(ap.from)}</span>${ic('right')}</div>` : ''}
 ${s.todo ? `<div class="banner" data-act="todo">${ic('list')}<span class="grow">${s.todo} opération${s.todo > 1 ? 's' : ''} à catégoriser</span>${ic('right')}</div>` : ''}
 ${recent.length ? `<b style="font-size:14px">Dernières opérations</b>${recent.map(opRow).join('')}` : `<div class="card"><b>Rien pour ce mois</b><div class="sm">Importe ton export BoursoBank ou ajoute une dépense avec le bouton +.</div></div>`}`;
 }
@@ -190,6 +194,12 @@ function detailScreen() {
   const line = (l, v, o = {}) => `<div class="line" style="padding:5px 0;${o.b ? 'font-weight:600;' : ''}"><span>${l}</span><span${o.c ? ` style="color:var(--${o.c})"` : ''}>${v}</span></div>`;
   const small = (t) => `<div class="sm" style="margin:2px 0 6px">${t}</div>`;
   const day = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' });
+  const ap = afterPayday(d, U.month);
+  const apCard = ap
+    ? `<div class="card"><b>Dépenses d’après-paye</b>${small(`${ap.ops.length} dépense${ap.ops.length > 1 ? 's' : ''} faite${ap.ops.length > 1 ? 's' : ''} à partir de ta paye du ${E(day(ap.pay.date))} (${sg(ap.total)}) ${ap.ops.length > 1 ? 'sont comptées' : 'est comptée'} en ${monthName(ap.from)}, alors qu’elles financent plutôt ${monthName(U.month)}. Les virements d’épargne restent où ils sont.`)}
+<div class="chips"><button class="chip on" data-act="shiftafter">Les compter en ${monthName(U.month)}</button><button class="chip" data-act="toggleafter">${U.showAfter ? 'Masquer' : 'Voir'} la liste</button></div>
+${U.showAfter ? ap.ops.map((t) => `<div class="line sm" style="padding:3px 0"><span>${E(day(t.date))} · ${E(t.label)}</span><span>${eur2(t.amount).replace('-', '−')}</span></div>`).join('') : ''}</div>`
+    : '';
   const misc = [];
   if (s.pending.count) misc.push(line(`${s.pending.count} opération${s.pending.count > 1 ? 's' : ''} à classer`, sg(s.pending.sum), { c: 'warn' }) + small(`Non déduites du reste. Reste si on les déduit : <b>${eur2(s.restIfPending)}</b>.`) + `<button class="chip" data-act="todo">Voir les opérations à classer</button>`);
   if (s.ignored.count) misc.push(line(`${s.ignored.count} opération${s.ignored.count > 1 ? 's' : ''} ignorée${s.ignored.count > 1 ? 's' : ''}`, sg(s.ignored.sum)) + small('Classées « Ignoré » : exclues du calcul, mais elles ont bien bougé sur ton compte.'));
@@ -204,6 +214,7 @@ ${line('Besoins', sg(-s.net.needs))}${line('Envies', sg(-s.net.wants))}${line('�
 ${line('Reste ce mois', sg(s.rest), { b: 1 })}
 ${s.covered.needs + s.covered.wants > 0.004 ? small(`Les ${eur2(s.covered.needs + s.covered.wants)} de dépenses financées par un retrait d’épargne ne sont pas déduits.`) : ''}
 </div>
+${apCard}
 <div class="card"><b>Pas pris en compte</b>
 ${misc.length ? misc.join('<div class="sep" style="margin:6px 0"></div>') : small('Rien : toutes les opérations du mois sont comptées.')}
 </div>
@@ -280,6 +291,16 @@ const ACT = {
     if (v === 'add') U.add = { amt: '', type: 'out', bucket: 'wants', sub: 'Restau', note: '' };
   },
   detail: () => (U.tab = 'detail'),
+  toggleafter: () => (U.showAfter = !U.showAfter),
+  shiftafter: () => {
+    const ap = afterPayday(store.get(), U.month);
+    if (!ap) return;
+    const n = ap.ops.length;
+    if (!window.confirm(`Compter ${n} dépense${n > 1 ? 's' : ''} (${eur2(Math.abs(ap.total))}) en ${monthName(U.month)} au lieu ${de(monthName(ap.from))} ?`)) return;
+    store.setPeriod(ap.ops.map((t) => t.id), U.month);
+    U.showAfter = false;
+    flash(`${n} dépense${n > 1 ? 's' : ''} déplacée${n > 1 ? 's' : ''} en ${monthName(U.month)}`);
+  },
   month: (v) => (U.month = shiftMonth(U.month, +v)),
   gomonth: (v) => {
     U.month = v;
