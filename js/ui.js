@@ -152,12 +152,12 @@ function editScreen() {
 <div class="chips">${all.map((b) => `<button class="chip ${t.bucket === b ? 'on' : ''}" data-act="ebucket" data-v="${b}">${bucketLabel(b)}</button>`).join('')}</div>
 ${SUBS[t.bucket] ? `<div class="chips">${SUBS[t.bucket].map((x) => `<button class="chip ${t.sub === x ? 'on' : ''}" data-act="esub" data-v="${E(x)}">${E(x)}</button>`).join('')}</div>` : ''}
 ${isWithdrawal(t) ? `<b style="font-size:14px">Cet argent a financé</b><div class="chips">${[['needs', 'Besoins'], ['wants', 'Envies']].map(([v, l]) => `<button class="chip ${(t.covers === 'wants' ? 'wants' : 'needs') === v ? 'on' : ''}" data-act="ecovers" data-v="${v}">${l}</button>`).join('')}</div><div class="sm">Un retrait d’épargne qui finance une dépense (frais de véhicule, par exemple) n’est pas compté contre ton budget du mois.</div>` : ''}
-${t.bucket === 'income' ? (() => {
+${(() => {
     const base = t.date.slice(0, 7);
     const cur = t.period || 'auto';
     const opts = [['auto', 'Automatique'], [shiftMonth(base, -1), monthLabel(shiftMonth(base, -1))], [base, monthLabel(base)], [shiftMonth(base, 1), monthLabel(shiftMonth(base, 1))]];
-    return `<b style="font-size:14px">Compté dans le budget de</b><div class="chips">${opts.map(([v, l]) => `<button class="chip ${cur === v ? 'on' : ''}" data-act="eperiod" data-v="${v}">${E(l)}</button>`).join('')}</div>`;
-  })() : ''}
+    return `<b style="font-size:14px">Compté dans le budget de</b><div class="chips">${opts.map(([v, l]) => `<button class="chip ${cur === v ? 'on' : ''}" data-act="eperiod" data-v="${v}">${E(l)}</button>`).join('')}</div><div class="sm">Laisse « Automatique » sauf si l’opération appartient à un autre mois (épargne de fin de mois, dépense juste après la paye…).</div>`;
+  })()}
 ${key ? `<label class="chk"><input type="checkbox" data-in="always" ${U.edit.always ? 'checked' : ''}> Toujours classer « ${E(key)} » ainsi</label>` : ''}
 <button class="btn dng" data-act="edel">Supprimer l’opération</button>`;
 }

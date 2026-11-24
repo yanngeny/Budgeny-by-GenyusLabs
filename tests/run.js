@@ -196,6 +196,22 @@ t('icône Android : PNG aux bonnes tailles et ressources adaptatives présentes'
   assert.match(res('values/ic_launcher_background.xml').toString(), /ic_launcher_background/);
 });
 
+t('mois choisi à la main pour n’importe quelle opération (virement de clôture, dépense après la paye)', () => {
+  const d = emptyData();
+  d.transactions = [
+    { id: 'a', date: '2026-10-29', amount: -500, bucket: 'savings', sub: 'Livret' }, // clôture octobre
+    { id: 'b', date: '2026-10-30', amount: -46.59, bucket: 'needs', period: '2026-11' }, // après la paye : novembre
+    { id: 'c', date: '2026-10-31', amount: -10, bucket: 'wants' }, // automatique : octobre
+  ];
+  const oct = summarize(d, '2026-10');
+  const nov = summarize(d, '2026-11');
+  assert.equal(oct.spent.savings, 500);
+  assert.equal(oct.spent.needs, 0);
+  assert.equal(oct.spent.wants, 10);
+  assert.equal(Math.round(nov.spent.needs * 100) / 100, 46.59);
+  assert.equal(nov.spent.savings, 0);
+});
+
 t('comparaison de versions', () => {
   assert.equal(isNewer('v0.2.0', '0.1.9'), true);
   assert.equal(isNewer('0.1.0', '0.1.0'), false);
