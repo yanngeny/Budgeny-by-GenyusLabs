@@ -1,5 +1,5 @@
 // État de l'appli : copie de travail en localStorage, la source de vérité partagée est le fichier JSON.
-import { emptyData, normalize, uid } from './model.js';
+import { emptyData, normalize, uid, RETRAIT } from './model.js';
 import { labelMatchesKey } from './csv.js';
 
 const KEY = 'budgeny.data.v1';
@@ -86,7 +86,7 @@ export function addRule(r) {
   for (const t of data.transactions) {
     if (!t.bucket && labelMatchesKey(r.k, t.label)) {
       t.bucket = r.bucket;
-      t.sub = r.sub || '';
+      t.sub = r.sub || (r.bucket === 'savings' && t.amount > 0 ? RETRAIT : '');
       t._m = now;
       n++;
     }

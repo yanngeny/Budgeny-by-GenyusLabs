@@ -2,7 +2,7 @@
 import * as store from './store.js';
 import * as sync from './sync.js';
 import * as storage from './storage.js';
-import { BANK_PKG, BUCKETS, BUCKET_KEYS, SUBS, bucketLabel, bucketColor, summarize, monthsOf, todayISO, shiftMonth, periodOf } from './model.js';
+import { BANK_PKG, BUCKETS, BUCKET_KEYS, SUBS, bucketLabel, bucketColor, summarize, monthsOf, todayISO, shiftMonth, periodOf, isWithdrawal, RETRAIT } from './model.js';
 import { decodeBuffer, parseBoursorama, prepareImport, ruleKeyOf } from './csv.js';
 import { isZip, unzipFirst } from './zip.js';
 import { checkUpdate } from './update.js';
@@ -70,7 +70,8 @@ function opRow(t) {
   const c = bucketColor(t.bucket);
   const per = periodOf(t, store.get().settings);
   const shifted = per !== t.date.slice(0, 7) ? `compté en ${monthLabel(per).split(' ')[0].toLowerCase()}` : '';
-  const sub = [bucketLabel(t.bucket), t.sub, shifted].filter(Boolean).join(' · ');
+  const funds = isWithdrawal(t) ? `finance les ${t.covers === 'wants' ? 'envies' : 'besoins'}` : '';
+  const sub = [bucketLabel(t.bucket), t.sub, funds, shifted].filter(Boolean).join(' · ');
   return `<div class="row tap" data-act="edit" data-v="${E(t.id)}"><div class="dot" style="background:${c}33;color:${c}">${E((t.label[0] || '?').toUpperCase())}</div><div class="grow"><div>${E(t.label)}</div><div class="sm">${E(sub)}</div></div><div class="amt ${t.amount > 0 ? 'pos' : ''}">${t.amount > 0 ? '+' : ''}${eur2(t.amount).replace('-', '−')}</div></div>`;
 }
 
@@ -81,7 +82,13 @@ function bucketBar(k, s, d) {
   const diff = p - t;
   const txt = ok ? (k === 'savings' ? 'Cible atteinte' : 'Dans la cible') : `${diff > 0 ? '+' : '−'}${Math.abs(diff)} pts`;
   const w = Math.min(100, (p / 60) * 100);
-  return `<div><div class="line"><b>${bucketLabel(k)}</b><span>${eur(s.spent[k])}</span></div><div class="bar"><i style="width:${w}%;background:${BUCKETS[k].color}"></i><b style="left:${Math.min(100, (t / 60) * 100)}%"></b></div><div class="line sm"><span>${p} % · cible ${t} %</span><span style="color:var(--${ok ? 'ok' : 'warn'})">${txt}</span></div></div>`;
+  const color = BUCKETS[k].color;
+  // Part financée par un retrait d'épargne : barre hachurée au-delà de la part « budget courant »
+  const cov = s.covered[k] || 0;
+  const gp = s.base > 0 ? Math.round((s.spent[k] / s.base) * 100) : p;
+  const hatch = cov > 0 ? `<i style="width:${Math.min(100, (gp / 60) * 100)}%;background:repeating-linear-gradient(135deg,${color} 0 4px,transparent 4px 8px);opacity:.6"></i>` : '';
+  const note = cov > 0 ? `<div class="sm">dont ${eur(cov)} financés par l’épargne</div>` : k === 'savings' && s.withdrawn > 0 ? `<div class="sm">${eur(s.withdrawn)} retirés de l’épargne</div>` : '';
+  return `<div><div class="line"><b>${bucketLabel(k)}</b><span>${eur(s.spent[k])}</span></div><div class="bar">${hatch}<i style="width:${w}%;background:${color}"></i><b style="left:${Math.min(100, (t / 60) * 100)}%"></b></div><div class="line sm"><span>${p} % · cible ${t} %</span><span style="color:var(--${ok ? 'ok' : 'warn'})">${txt}</span></div>${note}</div>`;
 }
 
 /* ---------- écrans ---------- */
@@ -144,6 +151,7 @@ function editScreen() {
 <b style="font-size:14px">Catégorie</b>
 <div class="chips">${all.map((b) => `<button class="chip ${t.bucket === b ? 'on' : ''}" data-act="ebucket" data-v="${b}">${bucketLabel(b)}</button>`).join('')}</div>
 ${SUBS[t.bucket] ? `<div class="chips">${SUBS[t.bucket].map((x) => `<button class="chip ${t.sub === x ? 'on' : ''}" data-act="esub" data-v="${E(x)}">${E(x)}</button>`).join('')}</div>` : ''}
+${isWithdrawal(t) ? `<b style="font-size:14px">Cet argent a financé</b><div class="chips">${[['needs', 'Besoins'], ['wants', 'Envies']].map(([v, l]) => `<button class="chip ${(t.covers === 'wants' ? 'wants' : 'needs') === v ? 'on' : ''}" data-act="ecovers" data-v="${v}">${l}</button>`).join('')}</div><div class="sm">Un retrait d’épargne qui finance une dépense (frais de véhicule, par exemple) n’est pas compté contre ton budget du mois.</div>` : ''}
 ${t.bucket === 'income' ? (() => {
     const base = t.date.slice(0, 7);
     const cur = t.period || 'auto';
@@ -287,7 +295,8 @@ const ACT = {
   eclose: () => (U.tab = 'ops'),
   ebucket: (v) => {
     const t = store.get().transactions.find((x) => x.id === U.edit.id);
-    store.updateTx(t.id, { bucket: v, sub: '' });
+    // Argent qui rentre classé en Épargne = retrait d'épargne
+    store.updateTx(t.id, { bucket: v, sub: v === 'savings' && t.amount > 0 ? RETRAIT : '', covers: '' });
     const k = ruleKeyOf(t.label);
     if (U.edit.always && k) {
       const n = store.addRule({ k, bucket: v });
@@ -295,6 +304,7 @@ const ACT = {
     }
   },
   esub: (v) => store.updateTx(U.edit.id, { sub: v }),
+  ecovers: (v) => store.updateTx(U.edit.id, { covers: v }),
   eperiod: (v) => store.updateTx(U.edit.id, { period: v === 'auto' ? '' : v }),
   edel: () => {
     if (!window.confirm('Supprimer cette opération ?')) return;
@@ -325,7 +335,7 @@ const ACT = {
       for (const j of g.idxs) I.fresh[j].bucket = g.bucket;
       if (!g.key.startsWith('#')) store.addRule({ k: g.key, bucket: g.bucket });
     }
-    store.addMany(I.fresh.map((t) => ({ date: t.date, label: t.label, amount: t.amount, bucket: t.bucket, sub: t.sub, hash: t.hash, source: 'import' })));
+    store.addMany(I.fresh.map((t) => ({ date: t.date, label: t.label, amount: t.amount, bucket: t.bucket, sub: t.sub || (t.bucket === 'savings' && t.amount > 0 ? RETRAIT : ''), hash: t.hash, source: 'import' })));
     const n = I.fresh.length;
     const last = I.fresh.map((t) => t.date).sort().pop();
     U.imp = null;

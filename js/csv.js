@@ -1,4 +1,6 @@
 // Import des exports CSV BoursoBank (Boursorama) : analyse, dédoublonnage, classement.
+import { RETRAIT } from './model.js';
+
 const norm = (s) =>
   String(s ?? '')
     .normalize('NFD')
@@ -161,7 +163,10 @@ function ruleMatches(key, text) {
 export const labelMatchesKey = (key, label) => ruleMatches(key, norm(label));
 
 const DEFAULTS = [
-  [/\b(salaire|paie|remuneration|revenu|revenus|traitement|allocation|allocations|caf|france travail|pole emploi|retraite|virements recus)\b/, 'income', '', 'pos'],
+  [/\b(revenu|revenus|salaire|paie|remuneration|traitement)\b/, 'income', '', 'pos'],
+  // Argent qui revient d'un compte d'épargne : retrait d'épargne (voir isWithdrawal dans model.js)
+  [/\b(mouvements internes|livret|epargne|pea|assurance vie)\b/, 'savings', RETRAIT, 'pos'],
+  [/\b(allocation|allocations|caf|france travail|pole emploi|retraite|virements recus)\b/, 'income', '', 'pos'],
   [/\b(epargne|livret|assurance vie|pea|placement|investissement)\b/, 'savings', 'Livret', 'neg'],
   [/\b(spotify|netflix|disney|canal|deezer|youtube|prime video|streaming)\b/, 'wants', 'Abonnements', null],
   [/\b(loyer|logement|energie|electricite|gaz|eau|edf|engie|copropriete|maison)\b/, 'needs', 'Logement', null],
@@ -183,7 +188,7 @@ const DEFAULTS = [
 export function classify(t, rules = []) {
   const text = norm(`${t.label} ${t.hint ?? ''} ${t.cat} ${t.parent}`);
   for (const r of rules) {
-    if (ruleMatches(r.k, text)) return { bucket: r.bucket, sub: r.sub || '' };
+    if (ruleMatches(r.k, text)) return { bucket: r.bucket, sub: r.sub || (r.bucket === 'savings' && t.amount > 0 ? RETRAIT : '') };
   }
   for (const [re, bucket, sub, cond] of DEFAULTS) {
     if (cond === 'pos' && t.amount <= 0) continue;

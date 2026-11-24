@@ -119,6 +119,61 @@ t('salaire versé en fin de mois : compté dans le mois suivant', () => {
   assert.equal(summarize(d, '2026-12').income, 2000);
 });
 
+t('retrait d’épargne : la dépense financée ne pèse pas sur le budget du mois', () => {
+  const d = emptyData();
+  d.transactions = [
+    { id: '1', date: '2026-11-02', amount: 2000, bucket: 'income' },
+    { id: '2', date: '2026-11-05', amount: -800, bucket: 'needs', sub: 'Transport' }, // frais de véhicule
+    { id: '3', date: '2026-11-06', amount: -200, bucket: 'needs' },
+    { id: '4', date: '2026-11-06', amount: 800, bucket: 'savings', sub: 'Retrait' }, // virement du Livret A
+    { id: '5', date: '2026-11-07', amount: -100, bucket: 'savings', sub: 'Livret' },
+  ];
+  let s = summarize(d, '2026-11');
+  assert.equal(s.spent.needs, 1000);
+  assert.equal(s.covered.needs, 800);
+  assert.equal(s.net.needs, 200);
+  assert.equal(s.pct.needs, 10);
+  assert.equal(s.spent.savings, 100); // le retrait n'est pas une épargne négative
+  assert.equal(s.withdrawn, 800);
+  assert.equal(s.rest, 1700);
+  d.transactions[3].amount = 1500; // plafonné à la dépense
+  s = summarize(d, '2026-11');
+  assert.equal(s.covered.needs, 1000);
+  assert.equal(s.net.needs, 0);
+  d.transactions[3].covers = 'wants'; // finance les envies : rien à couvrir ici
+  s = summarize(d, '2026-11');
+  assert.equal(s.covered.wants, 0);
+  assert.equal(s.net.needs, 1000);
+});
+
+t('entrée depuis un compte d’épargne : retrait, pas un revenu', () => {
+  const x = { label: 'VIR LIVRET A', hint: '', cat: 'Virements reçus de comptes à comptes', parent: 'Mouvements internes créditeurs', amount: 800 };
+  const r = classify(x, []);
+  assert.equal(r.bucket, 'savings');
+  assert.equal(r.sub, 'Retrait');
+  assert.equal(classify({ label: 'VIREMENT PERSO', hint: '', cat: '', parent: '', amount: 300 }, [{ k: 'virement perso', bucket: 'savings' }]).sub, 'Retrait');
+  assert.equal(classify({ ...x, amount: -150 }, []).sub, 'Livret'); // sortie vers le livret : épargne normale
+});
+
+t('icône Android : PNG aux bonnes tailles et ressources adaptatives présentes', () => {
+  const res = (p) => readFileSync(new URL('../native/android/res/' + p, import.meta.url));
+  const size = (p) => {
+    const b = res(p);
+    assert.equal(b.readUInt32BE(0), 0x89504e47, p + ' n’est pas un PNG');
+    return [b.readUInt32BE(16), b.readUInt32BE(20)];
+  };
+  for (const [d, k] of Object.entries({ mdpi: 1, hdpi: 1.5, xhdpi: 2, xxhdpi: 3, xxxhdpi: 4 })) {
+    const s = Math.round(48 * k);
+    const f = Math.round(108 * k);
+    assert.deepEqual(size(`mipmap-${d}/ic_launcher.png`), [s, s]);
+    assert.deepEqual(size(`mipmap-${d}/ic_launcher_round.png`), [s, s]);
+    assert.deepEqual(size(`mipmap-${d}/ic_launcher_foreground.png`), [f, f]);
+  }
+  assert.match(res('mipmap-anydpi-v26/ic_launcher.xml').toString(), /ic_launcher_foreground/);
+  assert.match(res('mipmap-anydpi-v26/ic_launcher_round.xml').toString(), /ic_launcher_foreground/);
+  assert.match(res('values/ic_launcher_background.xml').toString(), /ic_launcher_background/);
+});
+
 t('comparaison de versions', () => {
   assert.equal(isNewer('v0.2.0', '0.1.9'), true);
   assert.equal(isNewer('0.1.0', '0.1.0'), false);

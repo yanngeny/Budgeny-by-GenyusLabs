@@ -11,7 +11,7 @@ export const BUCKET_KEYS = Object.keys(BUCKETS);
 export const SUBS = {
   needs: ['Logement', 'Courses', 'Transport', 'Santé', 'Télécom', 'Assurances et impôts', 'Éducation'],
   wants: ['Restau', 'Loisirs', 'Abonnements', 'Shopping', 'Voyages'],
-  savings: ['Livret', 'Investissement', 'Projet'],
+  savings: ['Livret', 'Investissement', 'Projet', 'Retrait'],
 };
 
 export const bucketLabel = (b) =>
@@ -124,8 +124,15 @@ export function monthsOf(d) {
   return [...new Set(d.transactions.map((t) => periodOf(t, d.settings)))].sort().reverse();
 }
 
+export const RETRAIT = 'Retrait';
+
+// Une entrée d'argent classée Épargne > Retrait est un retrait d'épargne qui finance une dépense
+// (ex. frais de véhicule payés grâce au Livret A). Elle « couvre » des Besoins (par défaut) ou des Envies.
+export const isWithdrawal = (t) => t.bucket === 'savings' && t.amount > 0 && t.sub === RETRAIT;
+
 export function summarize(d, month) {
   const spent = { needs: 0, wants: 0, savings: 0 };
+  const withdrawn = { needs: 0, wants: 0 };
   let income = 0;
   let todo = 0;
   let count = 0;
@@ -133,12 +140,17 @@ export function summarize(d, month) {
     if (periodOf(t, d.settings) !== month) continue;
     count++;
     if (t.bucket === 'income') income += t.amount;
+    else if (isWithdrawal(t)) withdrawn[t.covers === 'wants' ? 'wants' : 'needs'] += t.amount;
     else if (t.bucket in spent) spent[t.bucket] -= t.amount;
     else if (!t.bucket) todo++;
   }
+  // Une dépense financée par l'épargne ne pèse pas sur le budget courant : on la sépare (plafonnée à la dépense).
+  const covered = { needs: Math.min(withdrawn.needs, Math.max(0, spent.needs)), wants: Math.min(withdrawn.wants, Math.max(0, spent.wants)) };
+  const net = { needs: spent.needs - covered.needs, wants: spent.wants - covered.wants, savings: spent.savings };
   const base = income > 0 ? income : d.settings.income || 0;
   const pct = {};
-  for (const k of BUCKET_KEYS) pct[k] = base > 0 ? Math.round((spent[k] / base) * 100) : 0;
-  const total = spent.needs + spent.wants + spent.savings;
-  return { income, base, spent, pct, total, rest: base - total, todo, count };
+  for (const k of BUCKET_KEYS) pct[k] = base > 0 ? Math.round((net[k] / base) * 100) : 0;
+  const total = net.needs + net.wants + net.savings;
+  const withdrawnTotal = withdrawn.needs + withdrawn.wants;
+  return { income, base, spent, net, covered, withdrawn: withdrawnTotal, pct, total, rest: base - total, todo, count };
 }

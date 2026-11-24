@@ -1,5 +1,5 @@
 // À lancer APRÈS `npx cap add android` : installe le plugin natif et patche le manifeste.
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, cpSync } from 'node:fs';
 
 const pkgDir = 'android/app/src/main/java/com/genyuslabs/budgeny';
 mkdirSync(pkgDir, { recursive: true });
@@ -18,4 +18,7 @@ if (!xml.includes('<queries>')) {
   xml = xml.replace('<application', queries);
   writeFileSync(manifestPath, xml);
 }
-console.log('Plugin Android installé');
+// Icône de l'appli (logo lampe + anneau 50-30-20) : adaptative (Android 8+) et PNG de secours.
+cpSync('native/android/res', 'android/app/src/main/res', { recursive: true });
+
+console.log('Plugin Android et icône installés');
