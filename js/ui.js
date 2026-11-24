@@ -285,7 +285,10 @@ const ACT = {
     const t = store.get().transactions.find((x) => x.id === U.edit.id);
     store.updateTx(t.id, { bucket: v, sub: '' });
     const k = ruleKeyOf(t.label);
-    if (U.edit.always && k) store.addRule({ k, bucket: v });
+    if (U.edit.always && k) {
+      const n = store.addRule({ k, bucket: v });
+      if (n) flash(n === 1 ? '1 autre opération classée' : `${n} autres opérations classées`);
+    }
   },
   esub: (v) => store.updateTx(U.edit.id, { sub: v }),
   edel: () => {

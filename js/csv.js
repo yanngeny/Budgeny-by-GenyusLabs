@@ -157,6 +157,9 @@ function ruleMatches(key, text) {
   return key !== '' && key.split(' ').every((tok) => text.includes(tok));
 }
 
+// Une opération déjà enregistrée (libellé seul) correspond-elle à cette règle ?
+export const labelMatchesKey = (key, label) => ruleMatches(key, norm(label));
+
 const DEFAULTS = [
   [/\b(salaire|paie|remuneration|revenu|revenus|traitement|allocation|allocations|caf|france travail|pole emploi|retraite|virements recus)\b/, 'income', '', 'pos'],
   [/\b(epargne|livret|assurance vie|pea|placement|investissement)\b/, 'savings', 'Livret', 'neg'],

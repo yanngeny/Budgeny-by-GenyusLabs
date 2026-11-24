@@ -1,5 +1,6 @@
 // État de l'appli : copie de travail en localStorage, la source de vérité partagée est le fichier JSON.
 import { emptyData, normalize, uid } from './model.js';
+import { labelMatchesKey } from './csv.js';
 
 const KEY = 'budgeny.data.v1';
 let data = emptyData();
@@ -74,9 +75,22 @@ export function setSettings(patch) {
   touch();
 }
 
+// Crée ou met à jour une règle, et l'applique aussitôt à toutes les opérations encore « à classer »
+// qui lui correspondent. Renvoie le nombre d'opérations rattrapées.
 export function addRule(r) {
   const ex = data.rules.find((x) => x.k === r.k);
   if (ex) Object.assign(ex, r, { _m: Date.now() });
   else data.rules.push({ id: uid(), _m: Date.now(), sub: '', ...r });
+  const now = Date.now();
+  let n = 0;
+  for (const t of data.transactions) {
+    if (!t.bucket && labelMatchesKey(r.k, t.label)) {
+      t.bucket = r.bucket;
+      t.sub = r.sub || '';
+      t._m = now;
+      n++;
+    }
+  }
   touch();
+  return n;
 }

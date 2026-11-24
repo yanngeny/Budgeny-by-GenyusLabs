@@ -160,6 +160,23 @@ t('pont natif : une action locale est écrite dans le fichier', () => {
   assert.equal(sync.state.status, 'ok');
 });
 
+// Une catégorie choisie se répercute sur les opérations encore « à classer » de même libellé
+store.addMany([
+  { date: '2026-11-01', label: 'MYSTERE SARL PARIS', amount: -5, bucket: '' },
+  { date: '2026-11-02', label: 'MYSTERE SARL LYON', amount: -6, bucket: '' },
+  { date: '2026-11-03', label: 'BOULANGER', amount: -7, bucket: '' },
+  { date: '2026-11-04', label: 'MYSTERE SARL', amount: -8, bucket: 'needs' },
+]);
+const caught = store.addRule({ k: 'mystere sarl', bucket: 'wants' });
+t('règle : rattrape les opérations à classer de même libellé, pas les autres', () => {
+  const tx = (l) => store.get().transactions.find((x) => x.label === l);
+  assert.equal(caught, 2);
+  assert.equal(tx('MYSTERE SARL PARIS').bucket, 'wants');
+  assert.equal(tx('MYSTERE SARL LYON').bucket, 'wants');
+  assert.equal(tx('BOULANGER').bucket, '');
+  assert.equal(tx('MYSTERE SARL').bucket, 'needs');
+});
+
 await storage.openBrowser('https://clients.boursobank.com/operations/generate/');
 failBrowser = true;
 await storage.openBrowser('https://github.com/x/y.apk', { fallback: true });
