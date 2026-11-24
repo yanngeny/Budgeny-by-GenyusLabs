@@ -3,8 +3,9 @@
 let plugin;
 function plug() {
   if (plugin === undefined) {
+    // Sans bundler, le pont natif expose les plugins via Capacitor.Plugins (registerPlugin n'existe pas ici).
     const C = window.Capacitor;
-    plugin = C?.isNativePlatform?.() ? C.registerPlugin('BudgenyFile') : null;
+    plugin = C?.isNativePlatform?.() ? C.Plugins?.BudgenyFile ?? C.registerPlugin?.('BudgenyFile') ?? null : null;
   }
   return plugin;
 }
