@@ -11,5 +11,6 @@ keystore.b64
 
 # Données personnelles : le dépôt est public
 *.csv
+*.zip
 Budgeny_*.json
 !tests/fixtures/*.csv

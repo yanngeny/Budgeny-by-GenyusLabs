@@ -1,7 +1,7 @@
-dateOp;dateVal;label;category;categoryParent;supplierFound;amount;comment;accountNum;accountLabel;accountbalance
-2026-11-20;2026-11-20;CARTE 20/11/26 CARREFOUR CB*1234;Supermarchés;Alimentation;carrefour;-42,30;;00040123456;COMPTE COURANT;1 234,50
-2026-11-20;2026-11-20;CARTE 20/11/26 CARREFOUR CB*1234;Supermarchés;Alimentation;carrefour;-42,30;;00040123456;COMPTE COURANT;1 192,20
-2026-11-19;2026-11-19;CARTE 19/11/26 SPOTIFY CB*1234;Abonnements;Abonnements & téléphonie;spotify;-10,99;;00040123456;COMPTE COURANT;1 234,50
-2026-11-05;2026-11-05;VIR SEPA ACME SALAIRE NOVEMBRE;Salaires;Revenus;;"2 400,00";;00040123456;COMPTE COURANT;3 000,00
-2026-11-03;2026-11-03;VIR Livret A;Epargne;Mouvements internes;;-150,00;;00040123456;COMPTE COURANT;2 000,00
-2026-11-02;2026-11-02;CARTE 02/11/26 MYSTERE SARL CB*1234;Divers;Autres;;-24,50;;00040123456;COMPTE COURANT;2 150,00
+"Date Opération";"Date Valeur";Libellé;"Libellé Suggéré";Catégorie;"Catégorie Parente";Solde;Commentaire;"Numéro Compte";"Libellé Compte";Solde;Pointage
+2026-11-20;2026-11-20;"CARTE 20/11/26 CARREFOUR CB*1234";"Carrefour";"Alimentation";"Vie quotidienne";-42,30;;00040123456;"COMPTE COURANT";1234.50;Non
+2026-11-20;2026-11-20;"CARTE 20/11/26 CARREFOUR CB*1234";"Carrefour";"Alimentation";"Vie quotidienne";-42,30;;00040123456;"COMPTE COURANT";1192.20;Non
+2026-11-19;2026-11-19;"CARTE 19/11/26 SPOTIFY CB*1234";"Spotify";"Multimedia à domicile (TV, internet, téléphonie…)";"Abonnements & téléphonie";-10,99;;00040123456;"COMPTE COURANT";1234.50;Non
+2026-11-05;2026-11-05;"VIR SEPA ACME SALAIRE NOVEMBRE";"Acme";"Virements reçus";"Virements reçus";2 400,00;;00040123456;"COMPTE COURANT";3000.00;Non
+2026-11-03;2026-11-03;"VIR Livret A";"Livret A";"Virements émis de comptes à comptes";"Mouvements internes débiteurs";-150,00;;00040123456;"COMPTE COURANT";2000.00;Non
+2026-11-02;2026-11-02;"CARTE 02/11/26 MYSTERE SARL CB*1234";"";"Non catégorisé";"Non catégorisé";-24,50;;00040123456;"COMPTE COURANT";2150.00;Non

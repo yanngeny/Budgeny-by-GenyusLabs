@@ -74,20 +74,31 @@ export function cleanLabel(raw) {
     .trim();
 }
 
+// Deux variantes connues de l'export BoursoBank :
+//  - ancien : dateOp;dateVal;label;category;categoryParent;supplierFound;amount;...
+//  - actuel : « Date Opération »;« Date Valeur »;Libellé;« Libellé Suggéré »;Catégorie;« Catégorie Parente »;
+//    Solde;Commentaire;« Numéro Compte »;« Libellé Compte »;Solde;Pointage
+//    (la 1re colonne « Solde » est en réalité le MONTANT de l'opération, la 2e est le solde du compte).
 const COLS = {
   date: ['dateop', 'date operation', 'date', 'dateval'],
   label: ['label', 'libelle', 'libelle operation'],
+  hint: ['libelle suggere', 'supplierfound'],
   amount: ['amount', 'montant'],
   cat: ['category', 'categorie'],
-  parent: ['categoryparent', 'categorie parent', 'parent'],
-  account: ['accountnum', 'accountlabel', 'compte'],
+  parent: ['categoryparent', 'categorie parent', 'categorie parente', 'parent'],
+  account: ['accountnum', 'numero compte', 'accountlabel', 'compte'],
+};
+
+const amountIndex = (head) => {
+  const j = COLS.amount.map((a) => head.indexOf(a)).find((x) => x >= 0);
+  return j ?? head.indexOf('solde'); // 1re colonne « Solde » = montant
 };
 
 export function parseBoursorama(text) {
   const rows = parseCsv(text);
   const hi = rows.findIndex((r) => {
     const h = r.map(norm);
-    return COLS.date.some((a) => h.includes(a)) && COLS.amount.some((a) => h.includes(a));
+    return COLS.date.some((a) => h.includes(a)) && amountIndex(h) >= 0;
   });
   if (hi < 0) return { ok: false, error: 'Format non reconnu : colonnes date et montant introuvables.', transactions: [], skipped: 0 };
   const head = rows[hi].map(norm);
@@ -96,6 +107,7 @@ export function parseBoursorama(text) {
     const j = COLS[k].map((a) => head.indexOf(a)).find((x) => x >= 0);
     idx[k] = j ?? -1;
   }
+  idx.amount = amountIndex(head);
   const get = (r, k) => (idx[k] >= 0 ? r[idx[k]] ?? '' : '');
   const out = [];
   let skipped = 0;
@@ -110,6 +122,7 @@ export function parseBoursorama(text) {
       date,
       amount,
       label: cleanLabel(get(r, 'label')) || '(sans libellé)',
+      hint: get(r, 'hint').trim(),
       cat: get(r, 'cat').trim(),
       parent: get(r, 'parent').trim(),
       account: get(r, 'account').trim(),
@@ -145,8 +158,8 @@ function ruleMatches(key, text) {
 }
 
 const DEFAULTS = [
-  [/\b(epargne|livret|assurance vie|pea|placement|investissement)\b/, 'savings', 'Livret', null],
-  [/\b(salaire|paie|remuneration|revenu|revenus|traitement|allocation|allocations|caf|france travail|pole emploi|retraite)\b/, 'income', '', 'pos'],
+  [/\b(salaire|paie|remuneration|revenu|revenus|traitement|allocation|allocations|caf|france travail|pole emploi|retraite|virements recus)\b/, 'income', '', 'pos'],
+  [/\b(epargne|livret|assurance vie|pea|placement|investissement)\b/, 'savings', 'Livret', 'neg'],
   [/\b(spotify|netflix|disney|canal|deezer|youtube|prime video|streaming)\b/, 'wants', 'Abonnements', null],
   [/\b(loyer|logement|energie|electricite|gaz|eau|edf|engie|copropriete|maison)\b/, 'needs', 'Logement', null],
   [/\b(alimentation|supermarche|supermarches|courses|carrefour|leclerc|auchan|lidl|intermarche|monoprix|franprix)\b/, 'needs', 'Courses', null],
@@ -158,18 +171,20 @@ const DEFAULTS = [
   [/\b(restaurant|restaurants|restauration|fast food|cafe|boulangerie)\b/, 'wants', 'Restau', null],
   [/\b(loisir|loisirs|sortie|sorties|culture|sport|cinema|spectacle|jeu|jeux)\b/, 'wants', 'Loisirs', null],
   [/\b(abonnement|abonnements)\b/, 'wants', 'Abonnements', null],
-  [/\b(shopping|vetement|vetements|habillement|electronique|cadeau|cadeaux|amazon)\b/, 'wants', 'Shopping', null],
+  [/\b(shopping|vetement|vetements|habillement|electronique|cadeau|cadeaux|amazon|bricolage|jardinage|livres|jouets|bijoux)\b/, 'wants', 'Shopping', null],
+  [/\b(sportifs|artistiques)\b/, 'wants', 'Loisirs', null],
   [/\b(voyage|voyages|vacance|vacances|hotel|airbnb|booking)\b/, 'wants', 'Voyages', null],
 ];
 
 // Règles de l'utilisateur d'abord, puis règles par défaut. Bucket '' = à classer à la main.
 export function classify(t, rules = []) {
-  const text = norm(`${t.label} ${t.cat} ${t.parent}`);
+  const text = norm(`${t.label} ${t.hint ?? ''} ${t.cat} ${t.parent}`);
   for (const r of rules) {
     if (ruleMatches(r.k, text)) return { bucket: r.bucket, sub: r.sub || '' };
   }
   for (const [re, bucket, sub, cond] of DEFAULTS) {
     if (cond === 'pos' && t.amount <= 0) continue;
+    if (cond === 'neg' && t.amount >= 0) continue;
     if (re.test(text)) return { bucket, sub };
   }
   return { bucket: '', sub: '' };

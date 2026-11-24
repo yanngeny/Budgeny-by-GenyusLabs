@@ -2,9 +2,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { deflateRawSync } from 'node:zlib';
+import { isZip, unzipFirst } from '../js/zip.js';
 import { fileURLToPath } from 'node:url';
 import { emptyData, normalize, mergeData, summarize, fingerprint } from '../js/model.js';
-import { parseBoursorama, prepareImport, parseAmount, parseDate, ruleKeyOf, classify } from '../js/csv.js';
+import { parseBoursorama, prepareImport, parseAmount, parseDate, ruleKeyOf, classify, decodeBuffer } from '../js/csv.js';
 import { isNewer } from '../js/update.js';
 
 let n = 0;
@@ -167,6 +169,72 @@ t('pont natif : ouverture du navigateur, repli seulement si demandé', () => {
   assert.equal(opened[0], 'https://clients.boursobank.com/operations/generate/');
   assert.equal(window.location.href, 'https://github.com/x/y.apk');
   assert.equal(rejected, true);
+});
+
+// --- ZIP : l'export BoursoBank est livré zippé ---
+function makeZip(name, buf, deflate) {
+  const nameB = Buffer.from(name);
+  const comp = deflate ? deflateRawSync(buf) : buf;
+  const method = deflate ? 8 : 0;
+  const lh = Buffer.alloc(30);
+  lh.writeUInt32LE(0x04034b50, 0);
+  lh.writeUInt16LE(20, 4);
+  lh.writeUInt16LE(method, 8);
+  lh.writeUInt32LE(comp.length, 18);
+  lh.writeUInt32LE(buf.length, 22);
+  lh.writeUInt16LE(nameB.length, 26);
+  const local = Buffer.concat([lh, nameB, comp]);
+  const cd = Buffer.alloc(46);
+  cd.writeUInt32LE(0x02014b50, 0);
+  cd.writeUInt16LE(20, 4);
+  cd.writeUInt16LE(20, 6);
+  cd.writeUInt16LE(method, 10);
+  cd.writeUInt32LE(comp.length, 20);
+  cd.writeUInt32LE(buf.length, 24);
+  cd.writeUInt16LE(nameB.length, 28);
+  const cdFull = Buffer.concat([cd, nameB]);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(1, 8);
+  eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(cdFull.length, 12);
+  eocd.writeUInt32LE(local.length, 16);
+  const all = Buffer.concat([local, cdFull, eocd]);
+  return all.buffer.slice(all.byteOffset, all.byteOffset + all.length);
+}
+const withBom = Buffer.from('﻿' + csv);
+const zDeflate = makeZip('export-operations-24-11-2026_21-21-28.CSV', withBom, true);
+const zStored = makeZip('a.csv', withBom, false);
+const z1 = await unzipFirst(zDeflate);
+const z2 = await unzipFirst(zStored);
+let zipErr = '';
+await unzipFirst(makeZip('lisez-moi.txt', Buffer.from('x'), false)).catch((e) => (zipErr = e.message));
+t('ZIP : export zippé lu (deflate et stocké, extension .CSV en majuscules, BOM)', () => {
+  assert.equal(isZip(zDeflate), true);
+  assert.equal(isZip(withBom.buffer.slice(withBom.byteOffset, withBom.byteOffset + withBom.length)), false);
+  for (const z of [z1, z2]) {
+    const r = parseBoursorama(decodeBuffer(z.bytes.buffer));
+    assert.equal(r.ok, true);
+    assert.equal(r.transactions.length, 6);
+    assert.equal(r.transactions[3].amount, 2400);
+  }
+  assert.match(zipErr, /Aucun fichier CSV/);
+});
+
+t('ancien format d’export (amount / categoryParent) toujours lu', () => {
+  const old = 'dateOp;dateVal;label;category;categoryParent;supplierFound;amount;comment;accountNum;accountLabel;accountbalance\n2026-11-20;2026-11-20;CARTE 20/11/26 LIDL CB*1;Supermarchés;Alimentation;lidl;-12,00;;1;CC;100,00\n';
+  const r = parseBoursorama(old);
+  assert.equal(r.transactions.length, 1);
+  assert.equal(r.transactions[0].amount, -12);
+  assert.equal(classify(r.transactions[0], []).bucket, 'needs');
+});
+
+t('revenus d’épargne et virements reçus (positifs) = revenus, pas épargne', () => {
+  const rev = { label: 'X', hint: '', cat: 'Revenus placement immobiliers', parent: 'Revenus d’épargne', amount: 350 };
+  const vir = { label: 'VIR SEPA EMPLOYEUR', hint: '', cat: 'Virements reçus', parent: 'Virements reçus', amount: 2000 };
+  assert.equal(classify(rev, []).bucket, 'income');
+  assert.equal(classify(vir, []).bucket, 'income');
+  assert.equal(classify({ ...vir, amount: -500, cat: 'Virements émis', parent: 'Virements émis' }, []).bucket, '');
 });
 
 const appOk = await storage.openApp('com.boursorama.android.clients');

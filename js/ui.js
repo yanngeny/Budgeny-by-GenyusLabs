@@ -4,6 +4,7 @@ import * as sync from './sync.js';
 import * as storage from './storage.js';
 import { BANK_PKG, BUCKETS, BUCKET_KEYS, SUBS, bucketLabel, bucketColor, summarize, monthsOf, todayISO } from './model.js';
 import { decodeBuffer, parseBoursorama, prepareImport, ruleKeyOf } from './csv.js';
+import { isZip, unzipFirst } from './zip.js';
 import { checkUpdate } from './update.js';
 import { VERSION } from './version.js';
 
@@ -365,12 +366,14 @@ async function onCsv(ev) {
   if (!f) return;
   U.tab = 'import';
   try {
-    const parsed = parseBoursorama(decodeBuffer(await f.arrayBuffer()));
+    let buf = await f.arrayBuffer();
+    if (isZip(buf)) buf = (await unzipFirst(buf)).bytes;
+    const parsed = parseBoursorama(decodeBuffer(buf));
     if (!parsed.ok) U.imp = { error: parsed.error };
     else if (!parsed.transactions.length) U.imp = { error: 'Aucune opération trouvée dans ce fichier.' };
     else U.imp = { name: f.name, skipped: parsed.skipped, ...prepareImport(parsed.transactions, store.get()) };
   } catch (e) {
-    U.imp = { error: 'Lecture du fichier impossible.' };
+    U.imp = { error: e?.message?.includes('ZIP') || e?.message?.includes('archive') ? e.message : 'Lecture du fichier impossible.' };
   }
   render();
 }
