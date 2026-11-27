@@ -496,6 +496,14 @@ export function summarize(d, month) {
     off[k] = base > 0 && (k === 'savings' ? pctRaw[k] < (T[k] ?? 0) : pctRaw[k] > (T[k] ?? 0));
   }
   const pctGross = { needs: Math.round(pctOf(gross.needs)), wants: Math.round(pctOf(gross.wants)) };
+  // Montant jusqu'au seuil de chaque catégorie (cible × revenus) : pour besoins et envies, ce qu'on peut encore
+  // dépenser (négatif = seuil dépassé) ; pour l'épargne, ce qu'il reste à mettre de côté (négatif = cible dépassée).
+  const target = {};
+  const left = {};
+  for (const k of BUCKET_KEYS) {
+    target[k] = Math.round((base * (T[k] ?? 0)) / 100);
+    left[k] = target[k] - net[k];
+  }
   const total = gross.needs + gross.wants + net.savings;
   const rest = base - total;
   const E = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, eurOf(v)]));
@@ -513,6 +521,8 @@ export function summarize(d, month) {
     surplus: eurOf(surplus), // retraits d'épargne au-delà de la dépense financée
     pct, // besoins et envies : hors épargne ; épargne : nette (peut être négative)
     pctGross, // besoins et envies : total, financement par l'épargne compris
+    target: E(target), // seuil de chaque catégorie en euros
+    left: E(left), // jusqu'au seuil : à dépenser encore (besoins, envies) ou à épargner encore (épargne)
     pctRaw,
     off,
     total: eurOf(total),

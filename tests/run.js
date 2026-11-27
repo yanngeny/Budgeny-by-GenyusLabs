@@ -436,6 +436,11 @@ t('cas de la capture : montants nets, épargne et reste cohérents', () => {
   assert.equal(s.rest, 10);
   assert.equal(s.rest, s.base - s.spent.needs - s.spent.wants - s.net.savings);
   assert.deepEqual(s.off, { needs: true, wants: false, savings: true });
+  // jusqu'au seuil : besoins 1 206 € (50 %), envies 603 € (25 %), épargne 603 € (25 %)
+  assert.deepEqual(s.target, { needs: 1205.5, wants: 602.75, savings: 602.75 });
+  assert.equal(s.left.needs, -270.5); // seuil dépassé
+  assert.equal(s.left.wants, 177.75); // encore à dépenser
+  assert.equal(s.left.savings, 852.75); // encore à épargner
 });
 
 t('entrée d’argent en Épargne = retrait, quelle que soit la sous-catégorie', () => {

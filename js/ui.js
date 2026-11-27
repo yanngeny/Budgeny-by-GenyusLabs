@@ -84,9 +84,11 @@ function bucketTile(k, s, d) {
   const C = 2 * Math.PI * R;
   const dash = (C * Math.max(0, Math.min(100, p))) / 100;
   const ang = ((t / 100) * 360 - 90) * (Math.PI / 180);
-  const diff = Math.round(s.pctRaw[k] - t);
   const ok = !s.off[k];
-  const status = ok ? 'OK' : `${diff > 0 ? '+' : '−'}${Math.abs(diff)} pts`;
+  // Montant jusqu'au seuil fixé : ce qu'on peut encore dépenser, ou ce qu'il reste à épargner
+  const L = s.left[k];
+  const status =
+    k === 'savings' ? (L > 0.004 ? `${eur(L)} à épargner` : 'objectif atteint') : L >= -0.004 ? `reste ${eur(L)}` : `${eur(-L)} de trop`;
   const amount = k === 'savings' ? s.net.savings : s.spent[k];
   const cov = s.covered[k] || 0;
   const sub = k === 'savings' ? (s.withdrawn > 0 ? `${eur(s.spent.savings)} − ${eur(s.withdrawn)}` : '') : cov > 0 ? `${eur(cov)} via épargne` : '';
