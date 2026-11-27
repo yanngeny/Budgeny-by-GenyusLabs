@@ -421,12 +421,14 @@ export const RETRAIT = 'Retrait';
 export const isWithdrawal = (t) => t.bucket === 'savings' && t.amount > 0;
 
 // Bilan d'un mois budgétaire. Toutes les sommes sont calculées en centimes, puis rendues en euros.
-//  - Une dépense financée par un retrait d'épargne ne pèse pas sur le budget du mois (net = brut − couvert).
-//  - Un retrait d'épargne qui ne finance aucune dépense est de l'épargne « reprise » : il réduit l'épargne nette.
+//  - Besoins et envies : deux pourcentages. Total (toutes les dépenses du mois) et hors épargne (sans la part
+//    financée par un retrait d'épargne, qui a été payée avec de l'argent mis de côté avant). La cible est
+//    comparée au pourcentage hors épargne.
+//  - Épargne nette = versée − retirée (tous les retraits) : elle est négative si on retire plus qu'on ne verse.
 //  - Un remboursement supérieur aux dépenses de sa catégorie compte comme une rentrée d'argent.
 //  - Revenus : ceux reçus ; tant que la paye du mois n'est pas arrivée, le revenu mensuel des réglages (s'il est
 //    plus élevé) sert de revenu attendu.
-// On a toujours : reste = base − besoins nets − envies nettes − épargne nette (= argent réellement disponible).
+// On a toujours : reste = base − besoins (total) − envies (total) − épargne nette (= argent réellement disponible).
 export function summarize(d, month) {
   const per = periodFn(d);
   const spent = { needs: 0, wants: 0, savings: 0 };
@@ -467,31 +469,34 @@ export function summarize(d, month) {
       todoSum += c;
     }
   }
-  const covered = { needs: Math.min(withdrawn.needs, Math.max(0, spent.needs)), wants: Math.min(withdrawn.wants, Math.max(0, spent.wants)) };
-  const withdrawnTotal = withdrawn.needs + withdrawn.wants;
-  const surplus = withdrawnTotal - covered.needs - covered.wants;
-  const net = { needs: spent.needs - covered.needs, wants: spent.wants - covered.wants, savings: spent.savings - surplus };
   let refunds = 0;
+  const gross = { needs: spent.needs, wants: spent.wants };
   for (const k of ['needs', 'wants']) {
-    if (net[k] < 0) {
-      refunds -= net[k];
-      net[k] = 0;
+    if (gross[k] < 0) {
+      refunds -= gross[k];
+      gross[k] = 0;
     }
   }
+  const covered = { needs: Math.min(withdrawn.needs, gross.needs), wants: Math.min(withdrawn.wants, gross.wants) };
+  const withdrawnTotal = withdrawn.needs + withdrawn.wants;
+  const surplus = withdrawnTotal - covered.needs - covered.wants;
+  const net = { needs: gross.needs - covered.needs, wants: gross.wants - covered.wants, savings: spent.savings - withdrawnTotal };
   const received = income + refunds;
   const hasPay = cycles(d).some((c) => c.label === month);
   const setting = cents(d.settings.income);
   const base = !hasPay && setting > received ? setting : received;
+  const pctOf = (v) => (base > 0 ? (v / base) * 100 : 0);
   const pctRaw = {};
   const pct = {};
   const off = {};
   const T = d.settings.targets || {};
   for (const k of BUCKET_KEYS) {
-    pctRaw[k] = base > 0 ? (net[k] / base) * 100 : 0;
+    pctRaw[k] = pctOf(net[k]);
     pct[k] = Math.round(pctRaw[k]);
     off[k] = base > 0 && (k === 'savings' ? pctRaw[k] < (T[k] ?? 0) : pctRaw[k] > (T[k] ?? 0));
   }
-  const total = net.needs + net.wants + net.savings;
+  const pctGross = { needs: Math.round(pctOf(gross.needs)), wants: Math.round(pctOf(gross.wants)) };
+  const total = gross.needs + gross.wants + net.savings;
   const rest = base - total;
   const E = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, eurOf(v)]));
   return {
@@ -501,12 +506,13 @@ export function summarize(d, month) {
     fromSetting: base !== received, // revenu attendu (réglage) : la paye du mois n'est pas encore là
     shiftedIn: eurOf(shiftedIn),
     base: eurOf(base),
-    spent: E(spent), // brut : dépenses (besoins, envies) et versements (épargne)
-    net: E(net), // ce qui pèse sur le budget du mois ; épargne nette = versée − retraits non affectés
+    spent: { ...E(gross), savings: eurOf(spent.savings) }, // total : dépenses (besoins, envies), versements (épargne)
+    net: E(net), // besoins et envies hors part financée par l'épargne ; épargne nette = versée − retirée
     covered: E(covered),
     withdrawn: eurOf(withdrawnTotal),
     surplus: eurOf(surplus), // retraits d'épargne au-delà de la dépense financée
-    pct,
+    pct, // besoins et envies : hors épargne ; épargne : nette (peut être négative)
+    pctGross, // besoins et envies : total, financement par l'épargne compris
     pctRaw,
     off,
     total: eurOf(total),

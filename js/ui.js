@@ -13,7 +13,7 @@ import { VERSION } from './version.js';
 const E = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const eur = (n, d = 0) => n.toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d }) + ' €';
 const eur2 = (n) => eur(n, 2);
-const sgn = (n) => (n > 0.004 ? '+' : n < -0.004 ? '−' : '') + eur(Math.abs(n));
+const pc = (n) => (n < 0 ? '−' + -n : String(n)); // pourcentage avec un vrai signe moins
 const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const monthLabel = (k) => {
   const [y, m] = k.split('-');
@@ -77,17 +77,22 @@ function bucketCard(k, s, d, scale = 60) {
   const txt = ok ? (k === 'savings' ? 'Cible atteinte' : 'Dans la cible') : `${diff > 0 ? '+' : '−'}${Math.abs(diff)} pts`;
   const color = BUCKETS[k].color;
   const w = Math.max(0, Math.min(100, (p / scale) * 100));
-  // Part financée par un retrait d'épargne : barre hachurée au-delà de la part « budget du mois »
   const cov = s.covered[k] || 0;
-  const gp = s.base > 0 ? (s.spent[k] / s.base) * 100 : p;
-  const hatch = cov > 0 ? `<i style="width:${Math.max(0, Math.min(100, (gp / scale) * 100))}%;background:repeating-linear-gradient(135deg,${color} 0 4px,transparent 4px 8px);opacity:.6"></i>` : '';
+  let pcts = `${pc(p)} % · cible ${t} %`;
+  let amount = s.net[k];
+  let hatch = '';
   let note = '';
-  if (cov > 0) note = `+ ${eur(cov)} financés par l’épargne (${eur(s.spent[k])} au total)`;
-  else if (k === 'savings' && s.withdrawn > 0) {
-    const used = s.covered.needs + s.covered.wants;
-    note = `Versé ${eur(s.spent.savings)} · retiré ${eur(s.withdrawn)}${used > 0 ? ` (dont ${eur(used)} pour des dépenses)` : ''} · ton épargne a varié de ${sgn(s.spent.savings - s.withdrawn)}`;
+  if (k === 'savings') {
+    if (s.withdrawn > 0) note = `Versé ${eur(s.spent.savings)} · retiré ${eur(s.withdrawn)}`;
+    amount = s.net.savings;
+  } else if (cov > 0) {
+    // Les deux pourcentages : total, et hors part financée par un retrait d'épargne (comparé à la cible)
+    pcts = `${s.pctGross[k]} % au total · ${p} % hors épargne · cible ${t} %`;
+    amount = s.spent[k];
+    hatch = `<i style="width:${Math.max(0, Math.min(100, (s.pctGross[k] / scale) * 100))}%;background:repeating-linear-gradient(135deg,${color} 0 4px,transparent 4px 8px);opacity:.6"></i>`;
+    note = `dont ${eur(cov)} financés par l’épargne`;
   }
-  return `<div class="bk"><div class="bk-top"><div class="opic" style="--c:${color}">${ic(BUCKET_ICON[k])}</div><div class="grow"><div>${bucketLabel(k)}</div><div class="sm">${p} % · cible ${t} %</div></div><div style="text-align:right"><div class="amt">${eur(s.net[k])}</div><span class="pill ${ok ? 'ok' : 'warn'}">${txt}</span></div></div><div class="bar">${hatch}<i style="width:${w}%;background:${color}"></i><b style="left:${Math.min(100, (t / scale) * 100)}%"></b></div>${note ? `<div class="sm">${note}</div>` : ''}</div>`;
+  return `<div class="bk"><div class="bk-top"><div class="opic" style="--c:${color}">${ic(BUCKET_ICON[k])}</div><div class="grow"><div>${bucketLabel(k)}</div><div class="sm">${pcts}</div></div><div style="text-align:right"><div class="amt">${k === 'savings' && amount < 0 ? '−' + eur(-amount) : eur(amount)}</div><span class="pill ${ok ? 'ok' : 'warn'}">${txt}</span></div></div><div class="bar">${hatch}<i style="width:${w}%;background:${color}"></i><b style="left:${Math.min(100, (t / scale) * 100)}%"></b></div>${note ? `<div class="sm">${note}</div>` : ''}</div>`;
 }
 
 /* ---------- écrans ---------- */
@@ -107,7 +112,7 @@ function home() {
   const offs = BUCKET_KEYS.filter((k) => s.off[k]).length;
   const hero =
     s.base > 0
-      ? `<div class="hero" data-act="detail"><div class="hero-top"><span class="hero-label">Reste ce mois</span><span class="pill">${offs ? `${offs} à surveiller` : 'Dans les clous'}</span></div><div class="hero-amt">${eur(s.rest)}</div><div class="hero-sub"><span>${eur(s.base)} ${s.fromSetting ? 'de revenus attendus' : 'de revenus'} · ${eur(s.net.needs + s.net.wants)} dépensés · ${eur(s.net.savings)} épargnés</span><span>Détail ›</span></div>${bank ? `<div class="hero-sub" style="margin-top:6px"><span>Solde du compte${bank.stale.count ? ` · ${bank.stale.count} en attente à vérifier` : ''}</span><span style="color:#fff;font-weight:600">${eur2(bank.total)}</span></div>` : ''}</div>`
+      ? `<div class="hero" data-act="detail"><div class="hero-top"><span class="hero-label">Reste ce mois</span><span class="pill">${offs ? `${offs} à surveiller` : 'Dans les clous'}</span></div><div class="hero-amt">${eur(s.rest)}</div><div class="hero-sub"><span>${eur(s.base)} ${s.fromSetting ? 'de revenus attendus' : 'de revenus'} · ${eur(s.spent.needs + s.spent.wants)} dépensés · ${s.net.savings < 0 ? '−' + eur(-s.net.savings) : eur(s.net.savings)} épargnés</span><span>Détail ›</span></div>${bank ? `<div class="hero-sub" style="margin-top:6px"><span>Solde du compte${bank.stale.count ? ` · ${bank.stale.count} en attente à vérifier` : ''}</span><span style="color:#fff;font-weight:600">${eur2(bank.total)}</span></div>` : ''}</div>`
       : `<div class="banner" data-act="go" data-v="set">${ic('wallet')}<span class="grow">Renseigne tes revenus mensuels dans les réglages, ou importe ton salaire.</span>${ic('right')}</div>`;
   return `<div class="top"><div class="brand">${logo(30)}Budgeny</div><div class="sync ${sy[0]}" data-act="go" data-v="set"><i></i>${sy[1]}</div></div>
 ${monthBar()}
@@ -253,18 +258,17 @@ ${small(`${s.count} opération${s.count > 1 ? 's' : ''}${s.lastDate ? ` · la pl
   if (s.pending.count) misc.push(line(`${s.pending.count} opération${s.pending.count > 1 ? 's' : ''} à classer`, sg(s.pending.sum), { c: 'warn' }) + small(`Non déduites du reste. Reste si on les déduit : <b>${eur2(s.restIfPending)}</b>.`) + `<button class="chip" data-act="todo">Voir les opérations à classer</button>`);
   if (s.ignored.count) misc.push(line(`${s.ignored.count} opération${s.ignored.count > 1 ? 's' : ''} ignorée${s.ignored.count > 1 ? 's' : ''}`, sg(s.ignored.sum)) + small('Classées « Ignoré » : exclues du calcul, mais elles ont bien bougé sur ton compte.'));
   if (bank?.stale.count) misc.push(line(`${bank.stale.count} saisie${bank.stale.count > 1 ? 's' : ''} en attente depuis plus de ${STALE_DAYS} jours`, sg(bank.stale.sum), { c: 'warn' }) + small('Jamais retrouvée(s) dans les exports : sans doute déjà passée(s) avec un autre montant. Elles ne sont plus ajoutées au solde du compte ; vérifie-les et supprime-les si besoin.') + `<button class="chip" data-act="stale">Voir ces opérations</button>`);
-  const used = s.covered.needs + s.covered.wants;
   return `${backBar('go', 'home', 'Détail du calcul')}
 <div class="sm" style="text-align:center">${E(monthLabel(U.month))}${E(range)}</div>
 <div class="card">
 ${s.fromSetting ? line('Revenus attendus <span class="sm">(réglage)</span>', sg(s.base)) + small(`Ta paye de ce mois n’est pas encore arrivée : reçu pour l’instant ${eur2(s.received)}.`) : line('Revenus', sg(s.base))}
 ${s.shiftedIn > 0.004 ? small(`dont ${eur2(s.shiftedIn)} reçus un autre mois et comptés ici`) : ''}
 ${s.refunds > 0.004 ? small(`dont ${eur2(s.refunds)} de remboursements supérieurs aux dépenses de leur catégorie`) : ''}
-${line('Besoins', sg(-s.net.needs))}${line('Envies', sg(-s.net.wants))}${line('Épargne nette', sg(-s.net.savings))}
-${s.surplus > 0.004 ? small(`Versée ${eur2(s.spent.savings)} − ${eur2(s.surplus)} retirés sans financer de dépense.`) : ''}
+${line('Besoins', sg(-s.spent.needs))}${s.covered.needs > 0.004 ? small(`dont ${eur2(s.covered.needs)} financés par l’épargne · ${s.pctGross.needs} % au total, ${s.pct.needs} % hors épargne`) : ''}
+${line('Envies', sg(-s.spent.wants))}${s.covered.wants > 0.004 ? small(`dont ${eur2(s.covered.wants)} financés par l’épargne · ${s.pctGross.wants} % au total, ${s.pct.wants} % hors épargne`) : ''}
+${line('Épargne nette', sg(-s.net.savings))}${s.withdrawn > 0.004 ? small(`Versée ${eur2(s.spent.savings)} − retirée ${eur2(s.withdrawn)} (${pc(s.pct.savings)} % des revenus)`) : ''}
 <div class="sep" style="margin:4px 0"></div>
 ${line('Reste ce mois', sg(s.rest), { b: 1 })}
-${used > 0.004 ? small(`${eur2(used)} de dépenses financées par un retrait d’épargne ne sont pas déduits : ils ont été payés avec de l’argent mis de côté avant.`) : ''}
 </div>
 <div class="card"><b>Pas pris en compte</b>
 ${misc.length ? misc.join('<div class="sep" style="margin:6px 0"></div>') : small('Rien : toutes les opérations du mois sont comptées.')}
@@ -281,7 +285,7 @@ function histScreen() {
 ${months.map((m) => {
     const s = summarize(d, m);
     const ok = s.base > 0 && !s.off.needs && !s.off.wants && !s.off.savings;
-    return `<div class="card tap" data-act="gomonth" data-v="${m}" style="cursor:pointer"><div class="line" style="margin-bottom:8px;align-items:center"><b>${E(monthLabel(m))}</b>${ok ? '<span class="pill ok">Cible atteinte</span>' : `<span class="sm">${s.pct.needs} / ${s.pct.wants} / ${s.pct.savings}</span>`}</div><div class="stack">${BUCKET_KEYS.map((k) => `<i style="width:${Math.max(0, Math.min(100, s.pct[k]))}%;background:${BUCKETS[k].color}"></i>`).join('')}</div>${ok ? `<div class="sm" style="margin-top:6px">${s.pct.needs} / ${s.pct.wants} / ${s.pct.savings}</div>` : ''}</div>`;
+    return `<div class="card tap" data-act="gomonth" data-v="${m}" style="cursor:pointer"><div class="line" style="margin-bottom:8px;align-items:center"><b>${E(monthLabel(m))}</b>${ok ? '<span class="pill ok">Cible atteinte</span>' : `<span class="sm">${s.pct.needs} / ${s.pct.wants} / ${pc(s.pct.savings)}</span>`}</div><div class="stack">${BUCKET_KEYS.map((k) => `<i style="width:${Math.max(0, Math.min(100, s.pct[k]))}%;background:${BUCKETS[k].color}"></i>`).join('')}</div>${ok ? `<div class="sm" style="margin-top:6px">${s.pct.needs} / ${s.pct.wants} / ${pc(s.pct.savings)}</div>` : ''}</div>`;
   }).join('')}
 <div class="sm" style="text-align:center">Cible ${T.needs} / ${T.wants} / ${T.savings} (besoins / envies / épargne)</div>`;
 }

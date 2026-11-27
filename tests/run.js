@@ -135,7 +135,8 @@ t('retrait d’épargne : la dépense financée ne pèse pas sur le budget du mo
   assert.equal(s.covered.needs, 800);
   assert.equal(s.net.needs, 200);
   assert.equal(s.pct.needs, 10);
-  assert.equal(s.spent.savings, 100); // le retrait n'est pas une épargne négative
+  assert.equal(s.spent.savings, 100); // versements ; le retrait est déduit dans l'épargne nette
+  assert.equal(s.net.savings, -700);
   assert.equal(s.withdrawn, 800);
   assert.equal(s.rest, 1700);
   d.transactions[3].amount = 1500; // plafonné à la dépense
@@ -160,7 +161,7 @@ t('détail du reste : opérations à classer, ignorées, retraits non utilisés,
   const r2 = (n) => Math.round(n * 100) / 100;
   const s = summarize(d, '2026-11');
   assert.equal(s.rest, 2100); // besoins (800) financés par le retrait, et les 100 € retirés en plus sont disponibles
-  assert.equal(s.net.savings, -100); // … mais ils réduisent l'épargne nette
+  assert.equal(s.net.savings, -900); // épargne nette = versée (0) − retirée (900)
   assert.equal(s.pending.count, 1);
   assert.equal(r2(s.pending.sum), -92.16);
   assert.equal(r2(s.restIfPending), 2007.84);
@@ -427,11 +428,13 @@ t('cas de la capture : montants nets, épargne et reste cohérents', () => {
     { id: 'r', date: '2026-11-08', amount: 750, bucket: 'savings', sub: 'Retrait' },
   ];
   const s = summarize(d, '2026-11');
-  assert.equal(s.net.needs, 1476); // c'est ce montant qui est affiché, cohérent avec 61 %
+  assert.equal(s.net.needs, 1476); // hors financement par l'épargne
   assert.equal(s.pct.needs, 61);
-  assert.equal(s.net.savings, 500);
+  assert.equal(s.pctGross.needs, 92); // total, financement par l'épargne compris
+  assert.equal(s.net.savings, -250); // 500 versés − 750 retirés
+  assert.equal(s.pct.savings, -10);
   assert.equal(s.rest, 10);
-  assert.equal(s.rest, s.base - s.net.needs - s.net.wants - s.net.savings);
+  assert.equal(s.rest, s.base - s.spent.needs - s.spent.wants - s.net.savings);
   assert.deepEqual(s.off, { needs: true, wants: false, savings: true });
 });
 
