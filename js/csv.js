@@ -1,6 +1,6 @@
 // Import des exports CSV BoursoBank (Boursorama) : analyse, dédoublonnage, classement.
-import { RETRAIT } from './model.js';
-import { norm, ruleKeyOf, ruleMatches, labelMatchesKey } from './text.js';
+import { RETRAIT, cents } from './model.js';
+import { norm, ruleKeyOf, ruleMatches, labelMatchesKey, bySpecificity, classText } from './text.js';
 export { ruleKeyOf, labelMatchesKey };
 
 
@@ -56,12 +56,27 @@ export function parseDate(s) {
   return null;
 }
 
+// Montants : « -42,30 », « 2 400,00 », « 1.234,56 », « 1,234.56 », « 1.234 » (milliers), signe « − ».
 export function parseAmount(s) {
-  let t = String(s ?? '').replace(/[\s €"]/g, '');
-  if (t.includes(',') && t.includes('.')) t = t.replace(/\./g, '');
-  t = t.replace(',', '.');
+  let t = String(s ?? '')
+    .replace(/[\s €"']/g, '')
+    .replace(/[−–]/g, '-');
+  const lc = t.lastIndexOf(',');
+  const ld = t.lastIndexOf('.');
+  if (lc >= 0 && ld >= 0) {
+    // les deux séparateurs : le dernier est le séparateur décimal, l'autre sépare les milliers
+    t = lc > ld ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, '');
+  } else {
+    const sep = lc >= 0 ? ',' : ld >= 0 ? '.' : '';
+    if (sep) {
+      const parts = t.split(sep);
+      // « 1.234 » ou « 12.345.678 » : séparateur de milliers (un montant n'a jamais 3 décimales)
+      if (parts.length > 2 || (parts[1].length === 3 && /\d/.test(parts[0].replace(/^[-+]/, '')))) t = parts.join('');
+      else t = parts.join('.');
+    }
+  }
   if (!/^[-+]?\d+(\.\d+)?$/.test(t)) return null;
-  return Number(t);
+  return Math.round(Number(t) * 100) / 100;
 }
 
 export function cleanLabel(raw) {
@@ -79,6 +94,7 @@ export function cleanLabel(raw) {
 //    (la 1re colonne « Solde » est en réalité le MONTANT de l'opération, la 2e est le solde du compte).
 const COLS = {
   date: ['dateop', 'date operation', 'date', 'dateval'],
+  vdate: ['dateval', 'date valeur'],
   label: ['label', 'libelle', 'libelle operation'],
   hint: ['libelle suggere', 'supplierfound'],
   amount: ['amount', 'montant'],
@@ -121,6 +137,7 @@ export function parseBoursorama(text) {
     out.push({
       date,
       amount,
+      vdate: parseDate(get(r, 'vdate')) || date, // date de passage sur le compte (sert au calcul du solde)
       label: cleanLabel(get(r, 'label')) || '(sans libellé)',
       hint: get(r, 'hint').trim(),
       cat: get(r, 'cat').trim(),
@@ -129,23 +146,53 @@ export function parseBoursorama(text) {
       bal: balIdx >= 0 ? parseAmount(r[balIdx] ?? '') : null,
     });
   }
-  return { ok: true, transactions: out, skipped, anchor: anchorOf(out) };
+  const accounts = accountsOf(out);
+  const main = accounts[0] ?? '';
+  return { ok: true, transactions: out, skipped, accounts, account: main, anchor: anchorOf(accounts.length > 1 ? out.filter((t) => t.account === main) : out) };
 }
 
-// Solde du compte à la date de la dernière opération du fichier. Le fichier est classé du plus récent au plus
-// ancien (ou l'inverse) : la ligne qui fait foi pour un jour est la plus récente de ce jour, c'est-à-dire la
-// première du fichier si l'ordre est décroissant, la dernière sinon.
+// Comptes présents dans l'export, du plus fourni au moins fourni.
+export function accountsOf(list) {
+  const n = new Map();
+  for (const t of list) if (t.account) n.set(t.account, (n.get(t.account) || 0) + 1);
+  return [...n.entries()].sort((a, b) => b[1] - a[1]).map(([a]) => a);
+}
+
+// Export qui contient plusieurs comptes : on n'importe que le compte suivi (les soldes et les virements entre
+// tes comptes ne se mélangent pas).
+export function selectAccount(parsed, account) {
+  if (!parsed.accounts || parsed.accounts.length < 2) return parsed;
+  const acc = parsed.accounts.includes(account) ? account : parsed.accounts[0];
+  const transactions = parsed.transactions.filter((t) => t.account === acc);
+  return { ...parsed, account: acc, transactions, anchor: anchorOf(transactions) };
+}
+
+// Solde du compte après la dernière opération passée. Chaque ligne donne le solde après elle : en enchaînant
+// les lignes (solde avant = solde après − montant), la dernière est celle dont le solde n'est le point de départ
+// d'aucune autre. Si l'enchaînement est ambigu, on se fie à l'ordre du fichier (le plus récent en tête ou en bas).
 export function anchorOf(list) {
   const withBal = list.filter((t) => t.bal !== null && t.bal !== undefined);
   if (!withBal.length) return null;
+  const date = withBal.reduce((m, t) => ((t.vdate || t.date) > m ? t.vdate || t.date : m), '');
+  const starts = new Map();
+  for (const t of withBal) {
+    const k = cents(t.bal) - cents(t.amount);
+    starts.set(k, (starts.get(k) || 0) + 1);
+  }
+  const ends = [];
+  for (const t of withBal) {
+    const k = cents(t.bal);
+    if (starts.get(k)) starts.set(k, starts.get(k) - 1);
+    else ends.push(t);
+  }
+  if (ends.length === 1) return { date, balance: ends[0].bal };
   const desc = list[0].date >= list[list.length - 1].date;
-  const max = withBal.reduce((m, t) => (t.date > m ? t.date : m), '');
-  const same = withBal.filter((t) => t.date === max);
+  const maxDate = withBal.reduce((m, t) => (t.date > m ? t.date : m), '');
+  const same = withBal.filter((t) => t.date === maxDate);
   const row = desc ? same[0] : same[same.length - 1];
-  return { date: max, balance: row.bal };
+  return { date, balance: row.bal };
 }
 
-const daysBetween = (a, b) => Math.abs(new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000;
 
 // Pas d'identifiant d'opération chez la banque : empreinte + numéro d'occurrence.
 export function addHashes(list) {
@@ -160,19 +207,24 @@ export function addHashes(list) {
 }
 
 
+// Bucket '' = à classer à la main : mieux vaut demander que se tromper.
 const DEFAULTS = [
+  // Remboursements entre particuliers (Lydia, Tricount…) : pas un revenu, ça compense une dépense
+  [/\b(lydia|paypal|tricount|wero|pumpkin|remboursement|rembt|rbt)\b/, '', '', 'pos'],
   [/\b(revenu|revenus|salaire|paie|remuneration|traitement)\b/, 'income', '', 'pos'],
   // Argent qui revient d'un compte d'épargne : retrait d'épargne (voir isWithdrawal dans model.js)
-  [/\b(mouvements internes|livret|epargne|pea|assurance vie)\b/, 'savings', RETRAIT, 'pos'],
+  [/\b(livret|epargne|pea|assurance vie)\b/, 'savings', RETRAIT, 'pos'],
+  // Autre mouvement interne entrant (compte joint…) : à classer
+  [/\b(mouvements internes)\b/, '', '', 'pos'],
   [/\b(allocation|allocations|caf|france travail|pole emploi|retraite|virements recus)\b/, 'income', '', 'pos'],
   [/\b(epargne|livret|assurance vie|pea|placement|investissement)\b/, 'savings', 'Livret', 'neg'],
   [/\b(spotify|netflix|disney|canal|deezer|youtube|prime video|streaming)\b/, 'wants', 'Abonnements', null],
   [/\b(loyer|logement|energie|electricite|gaz|eau|edf|engie|copropriete|maison)\b/, 'needs', 'Logement', null],
   [/\b(alimentation|supermarche|supermarches|courses|carrefour|leclerc|auchan|lidl|intermarche|monoprix|franprix)\b/, 'needs', 'Courses', null],
+  [/\b(assurance|assurances|impot|impots|taxe|taxes|frais bancaires|cotisation)\b/, 'needs', 'Assurances et impôts', null], // avant Transport : « assurance auto »
   [/\b(transport|transports|carburant|essence|station|parking|peage|navigo|sncf|ratp|auto)\b/, 'needs', 'Transport', null],
   [/\b(sante|pharmacie|medecin|mutuelle|dentiste|opticien)\b/, 'needs', 'Santé', null],
   [/\b(telephonie|telephone|mobile|internet|box|free|sfr|bouygues)\b/, 'needs', 'Télécom', null],
-  [/\b(assurance|assurances|impot|impots|taxe|taxes|frais bancaires|cotisation)\b/, 'needs', 'Assurances et impôts', null],
   [/\b(enfant|enfants|education|ecole|creche|scolarite)\b/, 'needs', 'Éducation', null],
   [/\b(restaurant|restaurants|restauration|fast food|cafe|boulangerie)\b/, 'wants', 'Restau', null],
   [/\b(loisir|loisirs|sortie|sorties|culture|sport|cinema|spectacle|jeu|jeux)\b/, 'wants', 'Loisirs', null],
@@ -182,11 +234,11 @@ const DEFAULTS = [
   [/\b(voyage|voyages|vacance|vacances|hotel|airbnb|booking)\b/, 'wants', 'Voyages', null],
 ];
 
-// Règles de l'utilisateur d'abord, puis règles par défaut. Bucket '' = à classer à la main.
+// Règles de l'utilisateur d'abord (mots entiers, la plus précise gagne), puis règles par défaut.
 export function classify(t, rules = []) {
-  const text = norm(`${t.label} ${t.hint ?? ''} ${t.cat} ${t.parent}`);
-  for (const r of rules) {
-    if (ruleMatches(r.k, text)) return { bucket: r.bucket, sub: r.sub || (r.bucket === 'savings' && t.amount > 0 ? RETRAIT : '') };
+  const text = norm(classText(t));
+  for (const r of [...rules].sort(bySpecificity)) {
+    if (ruleMatches(r.k, text)) return { bucket: r.bucket, sub: r.bucket === 'savings' && t.amount > 0 ? RETRAIT : r.sub || '' };
   }
   for (const [re, bucket, sub, cond] of DEFAULTS) {
     if (cond === 'pos' && t.amount <= 0) continue;
@@ -209,21 +261,40 @@ export function prepareImport(list, data) {
     }
     fresh.push({ ...t, ...classify(t, data.rules) });
   }
-  // Opérations saisies « en attente de la banque » : confirmées par l'import (même montant, à quelques jours près).
-  // L'opération importée remplace la saisie et garde la catégorie déjà choisie.
+  // Opérations saisies « en attente de la banque » : confirmées par l'import. Même sens, montant proche (le
+  // montant débité peut différer un peu de la saisie : carburant, pourboire…), passée entre 2 jours avant et
+  // 10 jours après la saisie. On apparie d'abord les couples les plus proches (montant, puis date).
+  // L'opération importée remplace la saisie et garde la catégorie, la note et le mois choisis.
   const pendings = data.transactions.filter((t) => t.pending);
+  const pairs = [];
+  for (const p of pendings) {
+    fresh.forEach((f, i) => {
+      if (Math.sign(p.amount) !== Math.sign(f.amount)) return;
+      const gap = Math.abs(cents(p.amount) - cents(f.amount));
+      if (gap > Math.max(100, Math.round(Math.abs(cents(p.amount)) * 0.1))) return;
+      const days = (new Date(f.date + 'T12:00:00') - new Date(p.date + 'T12:00:00')) / 86400000;
+      if (days < -2 || days > 10) return;
+      pairs.push({ p, i, gap, days: Math.abs(days) });
+    });
+  }
+  pairs.sort((a, b) => a.gap - b.gap || a.days - b.days);
   const usedPending = new Set();
+  const usedFresh = new Set();
   let confirmed = 0;
-  for (const f of fresh) {
-    const m = pendings.find((p) => !usedPending.has(p.id) && Math.abs(p.amount - f.amount) < 0.005 && daysBetween(p.date, f.date) <= 7);
-    if (!m) continue;
-    usedPending.add(m.id);
-    f.replaces = m.id;
+  for (const { p, i } of pairs) {
+    if (usedPending.has(p.id) || usedFresh.has(i)) continue;
+    usedPending.add(p.id);
+    usedFresh.add(i);
+    const f = fresh[i];
+    f.replaces = p.id;
     confirmed++;
-    if (m.bucket) {
-      f.bucket = m.bucket;
-      f.sub = m.sub || '';
+    if (p.bucket) {
+      f.bucket = p.bucket;
+      f.sub = p.sub || '';
+      if (p.covers) f.covers = p.covers;
     }
+    if (p.note) f.note = p.note;
+    if (p.period) f.period = p.period;
   }
   const groups = new Map();
   fresh.forEach((t, i) => {
@@ -236,4 +307,11 @@ export function prepareImport(list, data) {
     g.idxs.push(i);
   });
   return { fresh, dup, confirmed, groups: [...groups.values()] };
+}
+
+// Saisie « en attente » alors que la banque a déjà passé la même opération (déjà importée) : risque de doublon.
+export function importedTwin(data, tx) {
+  return data.transactions.find(
+    (t) => t.source === 'import' && cents(t.amount) === cents(tx.amount) && Math.abs(new Date(t.date + 'T12:00:00') - new Date(tx.date + 'T12:00:00')) <= 7 * 86400000,
+  ) ?? null;
 }

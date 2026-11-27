@@ -5,9 +5,9 @@ import { execFileSync } from 'node:child_process';
 import { deflateRawSync } from 'node:zlib';
 import { isZip, unzipFirst } from '../js/zip.js';
 import { fileURLToPath } from 'node:url';
-import { emptyData, normalize, mergeData, summarize, fingerprint, periodFn, paydays, cycleLabel, suggestPay, accountBalance, reconcile } from '../js/model.js';
+import { emptyData, normalize, mergeData, summarize, fingerprint, periodFn, paydays, cycleLabel, cycles, currentPeriod, suggestPay, accountBalance, reconcile, checkBalances, balanceAt, YEAR_MS } from '../js/model.js';
 import { backFrom } from '../js/nav.js';
-import { parseBoursorama, prepareImport, parseAmount, parseDate, ruleKeyOf, classify, decodeBuffer, anchorOf } from '../js/csv.js';
+import { parseBoursorama, prepareImport, parseAmount, parseDate, ruleKeyOf, classify, decodeBuffer, anchorOf, selectAccount, importedTwin } from '../js/csv.js';
 import { isNewer } from '../js/update.js';
 
 let n = 0;
@@ -159,10 +159,11 @@ t('détail du reste : opérations à classer, ignorées, retraits non utilisés,
   ];
   const r2 = (n) => Math.round(n * 100) / 100;
   const s = summarize(d, '2026-11');
-  assert.equal(s.rest, 2000); // les besoins (800) sont financés par le retrait
+  assert.equal(s.rest, 2100); // besoins (800) financés par le retrait, et les 100 € retirés en plus sont disponibles
+  assert.equal(s.net.savings, -100); // … mais ils réduisent l'épargne nette
   assert.equal(s.pending.count, 1);
   assert.equal(r2(s.pending.sum), -92.16);
-  assert.equal(r2(s.restIfPending), 1907.84);
+  assert.equal(r2(s.restIfPending), 2007.84);
   assert.deepEqual(s.ignored, { count: 1, sum: -50 });
   assert.equal(s.surplus, 100);
   assert.equal(r2(s.allSum), 1957.84);
@@ -356,6 +357,226 @@ t('opération « en attente » : confirmée par l’import, garde sa catégorie'
   assert.equal(p.fresh.find((x) => x.amount === -50).replaces, undefined);
 });
 
+
+// --- Correctifs 0.5.0 ------------------------------------------------------------------------------
+const PAY = 'VIR SEPA ACME PAIE';
+const payData = (dates, extra = []) => {
+  const d = emptyData();
+  d.settings.payKeys = ['acme paie'];
+  d.transactions = [...dates.map((date, i) => ({ id: 'p' + i, date, amount: 2000, label: PAY, bucket: 'income' })), ...extra];
+  return d;
+};
+
+t('paye vers le 15 qui bouge : jamais deux mois du même nom, aucun mois sauté', () => {
+  const d = payData(['2025-12-16', '2026-01-17', '2026-02-13', '2026-03-16'], [{ id: 'x', date: '2026-01-20', amount: -50, label: 'X', bucket: 'wants' }]);
+  assert.deepEqual(cycles(d).map((c) => c.label), ['2025-12', '2026-01', '2026-02', '2026-03']);
+  assert.equal(periodFn(d)(d.transactions[4]), '2026-01');
+  assert.equal(summarize(d, '2026-02').income, 2000);
+});
+
+t('avant la 1re paye connue : mois du calendrier (pas tout l’historique dans un seul mois)', () => {
+  const d = payData(['2026-10-29'], [
+    { id: 'a', date: '2026-06-10', amount: -1, label: 'A', bucket: 'needs' },
+    { id: 'b', date: '2026-09-10', amount: -1, label: 'B', bucket: 'needs' },
+    { id: 'c', date: '2026-10-10', amount: -1, label: 'C', bucket: 'needs' },
+  ]);
+  const per = periodFn(d);
+  assert.deepEqual(['a', 'b', 'c'].map((id) => per(d.transactions.find((x) => x.id === id))), ['2026-06', '2026-09', '2026-10']);
+});
+
+t('une prime plus grosse que le salaire, versée peu après, ne remplace pas la paye', () => {
+  const d = payData(['2026-09-29', '2026-10-29']);
+  d.transactions.push({ id: 'prime', date: '2026-11-08', amount: 3000, label: PAY, bucket: 'income' });
+  assert.deepEqual(paydays(d).map((p) => p.id), ['p0', 'p1']);
+});
+
+t('mois en cours à l’ouverture : paye du 25 novembre -> on affiche décembre', () => {
+  const d = payData(['2026-10-25', '2026-11-25']);
+  assert.equal(currentPeriod(d, '2026-11-27'), '2026-12');
+  assert.equal(currentPeriod(emptyData(), '2026-11-27'), '2026-11');
+});
+
+t('revenu attendu : tant que la paye n’est pas là, le réglage sert de base', () => {
+  const d = emptyData();
+  d.settings.income = 2400;
+  d.transactions = [
+    { id: 'caf', date: '2026-11-03', amount: 30, label: 'CAF', bucket: 'income' },
+    { id: 'l', date: '2026-11-04', amount: -800, label: 'LOYER', bucket: 'needs' },
+  ];
+  let s = summarize(d, '2026-11');
+  assert.equal(s.base, 2400);
+  assert.equal(s.fromSetting, true);
+  assert.equal(s.pct.needs, 33);
+  d.transactions.push({ id: 'sal', date: '2026-11-05', amount: 2500, label: 'SALAIRE', bucket: 'income' });
+  s = summarize(d, '2026-11');
+  assert.equal(s.base, 2530);
+  assert.equal(s.fromSetting, false);
+  const p = payData(['2026-10-29']); // mode paye : la paye est là, on prend ce qui a été reçu
+  p.settings.income = 2400;
+  assert.equal(summarize(p, '2026-11').base, 2000);
+});
+
+t('cas de la capture : montants nets, épargne et reste cohérents', () => {
+  const d = emptyData();
+  d.settings.targets = { needs: 50, wants: 25, savings: 25 };
+  d.transactions = [
+    { id: 'i', date: '2026-11-01', amount: 2411, bucket: 'income' },
+    { id: 'n', date: '2026-11-05', amount: -2226, bucket: 'needs' },
+    { id: 'w', date: '2026-11-06', amount: -425, bucket: 'wants' },
+    { id: 's', date: '2026-11-07', amount: -500, bucket: 'savings', sub: 'Livret' },
+    { id: 'r', date: '2026-11-08', amount: 750, bucket: 'savings', sub: 'Retrait' },
+  ];
+  const s = summarize(d, '2026-11');
+  assert.equal(s.net.needs, 1476); // c'est ce montant qui est affiché, cohérent avec 61 %
+  assert.equal(s.pct.needs, 61);
+  assert.equal(s.net.savings, 500);
+  assert.equal(s.rest, 10);
+  assert.equal(s.rest, s.base - s.net.needs - s.net.wants - s.net.savings);
+  assert.deepEqual(s.off, { needs: true, wants: false, savings: true });
+});
+
+t('entrée d’argent en Épargne = retrait, quelle que soit la sous-catégorie', () => {
+  const d = emptyData();
+  d.settings.income = 2000;
+  d.transactions = [{ id: 'l', date: '2026-11-03', amount: 300, label: 'VIR LIVRET', bucket: 'savings', sub: 'Livret' }];
+  const s = summarize(d, '2026-11');
+  assert.equal(s.spent.savings, 0);
+  assert.equal(s.withdrawn, 300);
+  assert.equal(s.net.savings, -300); // épargne reprise
+  assert.equal(s.rest, 2300);
+});
+
+t('remboursement plus gros que les dépenses de sa catégorie : catégorie à zéro, l’excédent est une rentrée', () => {
+  const d = emptyData();
+  d.transactions = [
+    { id: 'i', date: '2026-11-01', amount: 1000, bucket: 'income' },
+    { id: 'a', date: '2026-11-02', amount: -20, bucket: 'wants' },
+    { id: 'r', date: '2026-11-03', amount: 120, bucket: 'wants' }, // remboursement d'un achat du mois dernier
+  ];
+  const s = summarize(d, '2026-11');
+  assert.equal(s.net.wants, 0);
+  assert.equal(s.pct.wants, 0);
+  assert.equal(s.refunds, 100);
+  assert.equal(s.base, 1100);
+  assert.equal(s.rest, 1100);
+});
+
+t('cibles comparées sans arrondi, calculs en centimes', () => {
+  const d = emptyData();
+  d.transactions = [
+    { id: 'i', date: '2026-11-01', amount: 1000, bucket: 'income' },
+    { id: 'n', date: '2026-11-02', amount: -504, bucket: 'needs' },
+    { id: 'a', date: '2026-11-03', amount: -0.1, bucket: 'wants' },
+    { id: 'b', date: '2026-11-03', amount: -0.2, bucket: 'wants' },
+  ];
+  const s = summarize(d, '2026-11');
+  assert.equal(s.pct.needs, 50);
+  assert.equal(s.off.needs, true); // 50,4 % > 50 %
+  assert.equal(s.net.wants, 0.3);
+  assert.equal(s.rest, 495.7);
+});
+
+t('saisie en attente : montant un peu différent rapproché ; trop ancienne, plus ajoutée au solde', () => {
+  const d = emptyData();
+  d.transactions = [{ id: 'att', date: '2026-11-20', amount: -60, label: 'Essence', bucket: 'needs', sub: 'Transport', source: 'manual', pending: true, note: 'plein' }];
+  const p = prepareImport([{ date: '2026-11-22', amount: -60.37, label: 'CARTE TOTAL', cat: '', parent: '', hint: '', account: '1' }], d);
+  assert.equal(p.confirmed, 1);
+  assert.equal(p.fresh[0].sub, 'Transport');
+  assert.equal(p.fresh[0].note, 'plein');
+  assert.equal(prepareImport([{ date: '2026-11-22', amount: -90, label: 'AUTRE', cat: '', parent: '', hint: '', account: '1' }], d).confirmed, 0);
+  d.account = { date: '2026-12-15', balance: 100 };
+  const b = accountBalance(d);
+  assert.equal(b.total, 100);
+  assert.equal(b.stale.count, 1);
+  assert.equal(summarize(d, '2026-11').net.needs, 0); // ni dans le solde, ni dans le budget
+  assert.equal(summarize(d, '2026-11').stale.count, 1);
+  d.account.date = '2026-11-25';
+  assert.equal(accountBalance(d).total, 40);
+  assert.equal(summarize(d, '2026-11').net.needs, 60);
+});
+
+t('saisie en attente d’une opération déjà importée : détectée', () => {
+  const d = emptyData();
+  d.transactions = [{ id: 'imp', date: '2026-11-20', amount: -12.5, label: 'BOULANGERIE', source: 'import', bucket: 'needs' }];
+  assert.equal(importedTwin(d, { date: '2026-11-22', amount: -12.5 }).id, 'imp');
+  assert.equal(importedTwin(d, { date: '2026-12-22', amount: -12.5 }), null);
+});
+
+t('soldes des exports : trou dans l’historique détecté, solde passé calculé par date de valeur', () => {
+  const d = emptyData();
+  d.balances = [
+    { id: 'bal:2026-10-31', date: '2026-10-31', balance: 1000, _m: 1 },
+    { id: 'bal:2026-11-30', date: '2026-11-30', balance: 900, _m: 2 },
+  ];
+  d.transactions = [{ id: 'a', date: '2026-11-10', amount: -100, source: 'import', bucket: 'needs' }];
+  assert.deepEqual(checkBalances(d), []);
+  d.transactions.push({ id: 'b', date: '2026-11-29', vdate: '2026-12-02', amount: -30, source: 'import', bucket: 'needs' });
+  assert.deepEqual(checkBalances(d), []); // passée sur le compte le 2 décembre : après le 2e export
+  assert.equal(balanceAt(d, '2026-11-15'), 900);
+  d.transactions = d.transactions.filter((x) => x.id !== 'a'); // opération supprimée ou export manquant
+  assert.deepEqual(checkBalances(d), [{ from: '2026-10-31', to: '2026-11-30', diff: -100 }]);
+});
+
+t('solde lu dans l’export : enchaînement des soldes plutôt que l’ordre du fichier', () => {
+  const rows = [
+    { date: '2026-11-02', amount: -3, bal: 95 }, // ordre du fichier mélangé dans la journée
+    { date: '2026-11-02', amount: -2, bal: 98 },
+    { date: '2026-11-01', amount: -1, bal: 100 },
+  ];
+  assert.deepEqual(anchorOf(rows), { date: '2026-11-02', balance: 95 });
+});
+
+t('export avec plusieurs comptes : un seul compte importé', () => {
+  const two = 'dateOp;dateVal;label;category;categoryParent;supplierFound;amount;comment;accountNum;accountLabel;accountbalance\n'
+    + '2026-11-20;2026-11-20;A;;;;-10,00;;111;CC;90,00\n2026-11-19;2026-11-19;B;;;;-5,00;;111;CC;100,00\n2026-11-20;2026-11-20;C;;;;-1,00;;222;JOINT;50,00\n';
+  const r = parseBoursorama(two);
+  assert.deepEqual(r.accounts, ['111', '222']);
+  assert.equal(r.anchor.balance, 90);
+  const j = selectAccount(r, '222');
+  assert.equal(j.transactions.length, 1);
+  assert.equal(j.anchor.balance, 50);
+});
+
+t('classement : remboursements entre amis, assurance auto, mots entiers, règle la plus précise', () => {
+  const tx = (label, amount, cat = '', parent = '') => ({ label, hint: '', cat, parent, amount });
+  assert.equal(classify(tx('VIR LYDIA DUPONT', 25, 'Virements reçus', 'Virements reçus'), []).bucket, '');
+  assert.equal(classify(tx('PRLV MAAF', -40, 'Assurance auto', ''), []).sub, 'Assurances et impôts');
+  assert.equal(classify(tx('VIR COMPTE JOINT', 200, '', 'Mouvements internes créditeurs'), []).bucket, '');
+  assert.equal(classify(tx('FREEZE CORP', -5), [{ k: 'free', bucket: 'needs' }]).bucket, '');
+  const rules = [{ k: 'amazon', bucket: 'wants', sub: 'Shopping' }, { k: 'amazon prime', bucket: 'wants', sub: 'Abonnements' }];
+  assert.equal(classify(tx('AMAZON PRIME FR', -6.99), rules).sub, 'Abonnements');
+});
+
+t('montants : formats de milliers, anglais, signe moins typographique', () => {
+  assert.equal(parseAmount('1.234'), 1234);
+  assert.equal(parseAmount('1,234.56'), 1234.56);
+  assert.equal(parseAmount('−12,50'), -12.5);
+  assert.equal(parseAmount('12.5'), 12.5);
+  assert.equal(parseAmount('0,10'), 0.1);
+});
+
+t('fusion : même export importé sur deux téléphones -> une seule opération', () => {
+  const row = (id, _m, bucket) => ({ id, _m, date: '2026-11-03', amount: -10, label: 'CAFE', bucket, hash: 'h#0', source: 'import' });
+  const a = normalize({ transactions: [row('id1', 1, 'wants')] });
+  const b = normalize({ transactions: [row('id2', 2, 'needs')] });
+  const m = mergeData(a, b);
+  assert.equal(m.transactions.length, 1);
+  assert.equal(m.transactions[0].bucket, 'needs'); // la plus récemment modifiée
+  assert.equal(fingerprint(mergeData(b, a)), fingerprint(m));
+  assert.equal(fingerprint(mergeData(m, a)), fingerprint(m));
+});
+
+t('fusion : réglages fusionnés un par un, vieilles suppressions purgées', () => {
+  const a = normalize({ settings: { income: 2400, _m: 5, _f: { income: 5 } } });
+  const b = normalize({ settings: { targets: { needs: 60, wants: 20, savings: 20 }, _m: 6, _f: { targets: 6 } } });
+  const m = mergeData(a, b);
+  assert.equal(m.settings.income, 2400);
+  assert.equal(m.settings.targets.needs, 60);
+  const now = 10 * YEAR_MS;
+  const old = normalize({ deleted: [{ id: 'vieux', _m: now - 2 * YEAR_MS }, { id: 'recent', _m: now - 1000 }], transactions: [{ id: 'x', _m: now, date: '2026-11-01', amount: -1 }] });
+  assert.deepEqual(mergeData(old, normalize({})).deleted.map((x) => x.id), ['recent']);
+});
+
 t('comparaison de versions', () => {
   assert.equal(isNewer('v0.2.0', '0.1.9'), true);
   assert.equal(isNewer('0.1.0', '0.1.0'), false);
@@ -446,6 +667,16 @@ const ppCount = store.setPeriod(ppIds, '2026-09');
 t('setPeriod : rattache plusieurs opérations à un mois en une seule écriture', () => {
   assert.equal(ppCount, 2);
   assert.ok(store.get().transactions.filter((x) => ppIds.includes(x.id)).every((x) => x.period === '2026-09'));
+});
+
+store.addMany([{ date: '2026-11-05', label: 'XYZ 123', cat: 'Supermarchés', amount: -9, bucket: '', source: 'import' }]);
+const caughtCat = store.addRule({ k: 'supermarches', bucket: 'needs', sub: 'Courses' });
+const s1 = store.stamp();
+const s2 = store.stamp();
+t('règle : rattrapage avec le même texte qu’à l’import (catégorie de la banque), sous-catégorie retenue ; horloge monotone', () => {
+  assert.equal(caughtCat, 1);
+  assert.equal(store.get().transactions.find((x) => x.label === 'XYZ 123').sub, 'Courses');
+  assert.ok(s2 > s1);
 });
 
 await storage.openBrowser('https://clients.boursobank.com/operations/generate/');

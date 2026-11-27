@@ -2,8 +2,8 @@
 import * as store from './store.js';
 import * as sync from './sync.js';
 import * as storage from './storage.js';
-import { BANK_PKG, BUCKETS, BUCKET_KEYS, SUBS, bucketLabel, bucketColor, summarize, monthsOf, todayISO, shiftMonth, periodFn, isWithdrawal, RETRAIT, suggestPay, payKeysOf, paydays, cycleLabel, accountBalance, reconcile } from './model.js';
-import { decodeBuffer, parseBoursorama, prepareImport, ruleKeyOf } from './csv.js';
+import { BANK_PKG, BUCKETS, BUCKET_KEYS, SUBS, bucketLabel, bucketColor, summarize, monthsOf, todayISO, shiftMonth, periodFn, currentPeriod, isWithdrawal, RETRAIT, suggestPay, payKeysOf, cycles, accountBalance, reconcile, balanceRows, isStalePending, STALE_DAYS } from './model.js';
+import { decodeBuffer, parseBoursorama, prepareImport, ruleKeyOf, selectAccount, importedTwin } from './csv.js';
 import { ic, logo, opIconName, subIcon, BUCKET_ICON } from './icons.js';
 import { backFrom } from './nav.js';
 import { isZip, unzipFirst } from './zip.js';
@@ -13,6 +13,7 @@ import { VERSION } from './version.js';
 const E = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const eur = (n, d = 0) => n.toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d }) + ' €';
 const eur2 = (n) => eur(n, 2);
+const sgn = (n) => (n > 0.004 ? '+' : n < -0.004 ? '−' : '') + eur(Math.abs(n));
 const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const monthLabel = (k) => {
   const [y, m] = k.split('-');
@@ -21,11 +22,6 @@ const monthLabel = (k) => {
 };
 const monthName = (k) => monthLabel(k).split(' ')[0].toLowerCase();
 const longDay = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' });
-const dayBefore = (iso) => {
-  const t = new Date(iso + 'T12:00:00');
-  t.setDate(t.getDate() - 1);
-  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
-};
 function dayLabel(iso) {
   const today = todayISO();
   if (iso === today) return 'Aujourd’hui';
@@ -36,11 +32,12 @@ function dayLabel(iso) {
   return new Date(iso + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
 }
 
+const newAdd = () => ({ amt: '', type: 'out', bucket: 'wants', sub: 'Restau', note: '', pending: true });
 const U = {
   tab: 'home',
-  month: todayISO().slice(0, 7),
+  month: todayISO().slice(0, 7), // remplacé au démarrage par le mois budgétaire en cours
   filter: 'all',
-  add: { amt: '', type: 'out', bucket: 'wants', sub: 'Restau', note: '' },
+  add: newAdd(),
   edit: null,
   imp: null,
   upd: null,
@@ -63,29 +60,34 @@ const monthBar = () => `<div class="monthbar"><button class="ib" data-act="month
 const backBar = (act, v, title) => `<div class="hd"><button class="ib" data-act="${act}"${v ? ` data-v="${v}"` : ''} aria-label="Retour">${ic('back')}</button><b style="font-size:17px">${title}</b><span style="width:40px"></span></div>`;
 const bucketChip = (b, on, act, v, extra = '') => `<button class="chip ${extra} b-${b} ${on ? 'on' : ''}" data-act="${act}" data-v="${v}">${BUCKET_ICON[b] ? ic(BUCKET_ICON[b]) : ''}${bucketLabel(b)}</button>`;
 
-function opRow(t, per) {
+function opRow(t, per, accDate) {
   const c = bucketColor(t.bucket);
   const p = per(t);
   const shifted = p !== t.date.slice(0, 7) ? `compté en ${monthName(p)}` : '';
   const funds = isWithdrawal(t) ? `finance les ${t.covers === 'wants' ? 'envies' : 'besoins'}` : '';
-  const sub = [bucketLabel(t.bucket), t.sub, funds, shifted, t.pending ? 'en attente de la banque' : ''].filter(Boolean).join(' · ');
+  const sub = [bucketLabel(t.bucket), t.sub, funds, shifted, t.pending ? (isStalePending(t, accDate) ? 'en attente depuis longtemps : à vérifier' : 'en attente de la banque') : ''].filter(Boolean).join(' · ');
   return `<div class="row tap" data-act="edit" data-v="${E(t.id)}"><div class="opic" style="--c:${c}">${ic(opIconName(t))}</div><div class="grow"><div>${E(t.label)}</div><div class="sm">${E(sub)}</div></div><div class="amt ${t.amount > 0 ? 'pos' : ''}">${t.amount > 0 ? '+' : ''}${eur2(t.amount).replace('-', '−')}</div></div>`;
 }
 
 function bucketCard(k, s, d, scale = 60) {
   const p = s.pct[k];
   const t = d.settings.targets[k];
-  const ok = k === 'savings' ? p >= t : p <= t;
-  const diff = p - t;
+  const ok = !s.off[k];
+  const diff = Math.round(s.pctRaw[k] - t);
   const txt = ok ? (k === 'savings' ? 'Cible atteinte' : 'Dans la cible') : `${diff > 0 ? '+' : '−'}${Math.abs(diff)} pts`;
   const color = BUCKETS[k].color;
-  const w = Math.min(100, (p / scale) * 100);
-  // Part financée par un retrait d'épargne : barre hachurée au-delà de la part « budget courant »
+  const w = Math.max(0, Math.min(100, (p / scale) * 100));
+  // Part financée par un retrait d'épargne : barre hachurée au-delà de la part « budget du mois »
   const cov = s.covered[k] || 0;
-  const gp = s.base > 0 ? Math.round((s.spent[k] / s.base) * 100) : p;
-  const hatch = cov > 0 ? `<i style="width:${Math.min(100, (gp / scale) * 100)}%;background:repeating-linear-gradient(135deg,${color} 0 4px,transparent 4px 8px);opacity:.6"></i>` : '';
-  const note = cov > 0 ? `<div class="sm">dont ${eur(cov)} financés par l’épargne</div>` : k === 'savings' && s.withdrawn > 0 ? `<div class="sm">${eur(s.withdrawn)} retirés de l’épargne</div>` : '';
-  return `<div class="bk"><div class="bk-top"><div class="opic" style="--c:${color}">${ic(BUCKET_ICON[k])}</div><div class="grow"><div>${bucketLabel(k)}</div><div class="sm">${p} % · cible ${t} %</div></div><div style="text-align:right"><div class="amt">${eur(s.spent[k])}</div><span class="pill ${ok ? 'ok' : 'warn'}">${txt}</span></div></div><div class="bar">${hatch}<i style="width:${w}%;background:${color}"></i><b style="left:${Math.min(100, (t / scale) * 100)}%"></b></div>${note}</div>`;
+  const gp = s.base > 0 ? (s.spent[k] / s.base) * 100 : p;
+  const hatch = cov > 0 ? `<i style="width:${Math.max(0, Math.min(100, (gp / scale) * 100))}%;background:repeating-linear-gradient(135deg,${color} 0 4px,transparent 4px 8px);opacity:.6"></i>` : '';
+  let note = '';
+  if (cov > 0) note = `+ ${eur(cov)} financés par l’épargne (${eur(s.spent[k])} au total)`;
+  else if (k === 'savings' && s.withdrawn > 0) {
+    const used = s.covered.needs + s.covered.wants;
+    note = `Versé ${eur(s.spent.savings)} · retiré ${eur(s.withdrawn)}${used > 0 ? ` (dont ${eur(used)} pour des dépenses)` : ''} · ton épargne a varié de ${sgn(s.spent.savings - s.withdrawn)}`;
+  }
+  return `<div class="bk"><div class="bk-top"><div class="opic" style="--c:${color}">${ic(BUCKET_ICON[k])}</div><div class="grow"><div>${bucketLabel(k)}</div><div class="sm">${p} % · cible ${t} %</div></div><div style="text-align:right"><div class="amt">${eur(s.net[k])}</div><span class="pill ${ok ? 'ok' : 'warn'}">${txt}</span></div></div><div class="bar">${hatch}<i style="width:${w}%;background:${color}"></i><b style="left:${Math.min(100, (t / scale) * 100)}%"></b></div>${note ? `<div class="sm">${note}</div>` : ''}</div>`;
 }
 
 /* ---------- écrans ---------- */
@@ -95,16 +97,17 @@ function home() {
   const s = summarize(d, U.month);
   const T = d.settings.targets;
   const recent = d.transactions.filter((t) => per(t) === U.month).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 5);
+  const accDate = accountBalance(d)?.date;
   const S = sync.state;
   const sy = !S.ref ? ['', 'Local'] : S.status === 'syncing' ? ['busy', 'Synchro…'] : S.status === 'error' ? ['err', 'Erreur'] : ['ok', 'Synchronisé'];
   const needPay = !payKeysOf(d.settings).length && suggestPay(d);
   const bank = accountBalance(d);
   // Échelle commune aux trois barres (au moins 60 %), pour que la dépense financée par l'épargne reste visible
   const scale = Math.max(60, Math.ceil(Math.max(...BUCKET_KEYS.map((k) => (s.base > 0 ? (s.spent[k] / s.base) * 100 : 0))) / 10) * 10);
-  const offs = BUCKET_KEYS.filter((k) => (k === 'savings' ? s.pct[k] < T[k] : s.pct[k] > T[k])).length;
+  const offs = BUCKET_KEYS.filter((k) => s.off[k]).length;
   const hero =
     s.base > 0
-      ? `<div class="hero" data-act="detail"><div class="hero-top"><span class="hero-label">Reste ce mois</span><span class="pill">${offs ? `${offs} à surveiller` : 'Dans les clous'}</span></div><div class="hero-amt">${eur(s.rest)}</div><div class="hero-sub"><span>${eur(s.base)} de revenus · ${eur(s.total)} dépensés</span><span>Détail ›</span></div>${bank ? `<div class="hero-sub" style="margin-top:6px"><span>Solde du compte</span><span style="color:#fff;font-weight:600">${eur2(bank.total)}</span></div>` : ''}</div>`
+      ? `<div class="hero" data-act="detail"><div class="hero-top"><span class="hero-label">Reste ce mois</span><span class="pill">${offs ? `${offs} à surveiller` : 'Dans les clous'}</span></div><div class="hero-amt">${eur(s.rest)}</div><div class="hero-sub"><span>${eur(s.base)} ${s.fromSetting ? 'de revenus attendus' : 'de revenus'} · ${eur(s.net.needs + s.net.wants)} dépensés · ${eur(s.net.savings)} épargnés</span><span>Détail ›</span></div>${bank ? `<div class="hero-sub" style="margin-top:6px"><span>Solde du compte${bank.stale.count ? ` · ${bank.stale.count} en attente à vérifier` : ''}</span><span style="color:#fff;font-weight:600">${eur2(bank.total)}</span></div>` : ''}</div>`
       : `<div class="banner" data-act="go" data-v="set">${ic('wallet')}<span class="grow">Renseigne tes revenus mensuels dans les réglages, ou importe ton salaire.</span>${ic('right')}</div>`;
   return `<div class="top"><div class="brand">${logo(30)}Budgeny</div><div class="sync ${sy[0]}" data-act="go" data-v="set"><i></i>${sy[1]}</div></div>
 ${monthBar()}
@@ -113,7 +116,7 @@ ${needPay ? `<div class="banner" data-act="detectpay">${ic('calendar')}<span cla
 ${hero}
 ${BUCKET_KEYS.map((k) => bucketCard(k, s, d, scale)).join('')}
 ${s.todo ? `<div class="banner" data-act="todo">${ic('help')}<span class="grow">${s.todo} opération${s.todo > 1 ? 's' : ''} à catégoriser</span>${ic('right')}</div>` : ''}
-${recent.length ? `<div class="sec">Dernières opérations<a data-act="go" data-v="ops">Tout voir ›</a></div><div class="grp">${recent.map((t) => opRow(t, per)).join('')}</div>` : `<div class="card empty">${logo(60)}<b>Rien pour ce mois</b><div class="sm">Importe ton export BoursoBank ou ajoute une dépense avec le bouton +.</div><button class="btn" data-act="go" data-v="import">${ic('upload')}Importer un export</button></div>`}`;
+${recent.length ? `<div class="sec">Dernières opérations<a data-act="go" data-v="ops">Tout voir ›</a></div><div class="grp">${recent.map((t) => opRow(t, per, accDate)).join('')}</div>` : `<div class="card empty">${logo(60)}<b>Rien pour ce mois</b><div class="sm">Importe ton export BoursoBank ou ajoute une dépense avec le bouton +.</div><button class="btn" data-act="go" data-v="import">${ic('upload')}Importer un export</button></div>`}`;
 }
 
 function addScreen() {
@@ -126,7 +129,7 @@ function addScreen() {
 ${A.type === 'out' ? `<div class="chips">${BUCKET_KEYS.map((b) => bucketChip(b, A.bucket === b, 'abucket', b, 'f')).join('')}</div>
 <div class="chips">${subs.map((x) => `<button class="chip b-${A.bucket} ${A.sub === x ? 'on' : ''}" data-act="asub" data-v="${E(x)}">${ic(subIcon(x))}${E(x)}</button>`).join('')}</div>` : ''}
 <input type="text" id="note" data-in="note" placeholder="Note (facultatif)" value="${E(A.note)}">
-${A.type === 'out' ? `<label class="chk"><input type="checkbox" data-in="pending" ${A.pending ? 'checked' : ''}> En attente de la banque (pas encore dans l’export)</label>` : ''}
+${A.type === 'out' ? `<label class="chk"><input type="checkbox" data-in="pending" ${A.pending ? 'checked' : ''}> Payé par carte ou virement : sera remplacé par l’opération de la banque à l’import (décoche pour des espèces)</label>` : ''}
 <div class="keys">${['1', '2', '3', '4', '5', '6', '7', '8', '9', ',', '0', '⌫'].map((k) => `<button class="key" data-act="key" data-v="${k}">${k}</button>`).join('')}</div>
 <button class="btn" data-act="asave">${ic('check')}Enregistrer</button>`;
 }
@@ -135,8 +138,10 @@ function opsScreen() {
   const d = store.get();
   const per = periodFn(d);
   const F = [['all', 'Tout'], ['needs', 'Besoins'], ['wants', 'Envies'], ['savings', 'Épargne'], ['todo', 'À classer']];
+  const accDate = accountBalance(d)?.date;
   let list = d.transactions.filter((t) => per(t) === U.month);
   if (U.filter === 'todo') list = list.filter((t) => !t.bucket);
+  else if (U.filter === 'stale') list = d.transactions.filter((t) => isStalePending(t, accDate));
   else if (U.filter !== 'all') list = list.filter((t) => t.bucket === U.filter);
   list.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   let html = '';
@@ -152,7 +157,7 @@ function opsScreen() {
       last = t.date;
       html += `<div class="sm" style="margin-top:2px;font-weight:600;text-transform:capitalize">${E(dayLabel(t.date))}</div>`;
     }
-    rows += opRow(t, per);
+    rows += opRow(t, per, accDate);
   }
   flushRows();
   return `<div class="hd"><h1>Opérations</h1><button class="ib" data-act="go" data-v="import" aria-label="Importer un export">${ic('upload')}</button></div>
@@ -200,7 +205,7 @@ ${bank}<button class="btn" data-act="pickcsv">${ic('upload')}2 · Choisir le fic
   }
   const open = I.groups.filter((g) => !g.bucket).length;
   return `${backBar('iclose', '', 'Importer un export')}
-<div class="card"><div style="font-weight:600">${E(I.name)}</div><div class="sm">${I.fresh.length + I.dup} opérations lues${I.skipped ? ` · ${I.skipped} lignes ignorées` : ''}</div></div>
+<div class="card"><div style="font-weight:600">${E(I.name)}</div><div class="sm">${I.fresh.length + I.dup} opérations lues${I.skipped ? ` · ${I.skipped} lignes ignorées` : ''}</div>${I.parsed?.accounts?.length > 1 ? `<div class="sm" style="margin-top:8px">Ce fichier contient plusieurs comptes : lequel suivre ?</div><div class="chips" style="margin-top:6px">${I.parsed.accounts.map((a) => `<button class="chip ${I.account === a ? 'on' : ''}" data-act="iaccount" data-v="${E(a)}">${E(a)}</button>`).join('')}</div>` : ''}</div>
 <div class="tiles"><div class="tile"><b>${I.fresh.length}</b><span class="sm">nouvelles</span></div><div class="tile"><b>${I.dup}</b><span class="sm">déjà là</span></div><div class="tile"><b>${I.groups.reduce((n, g) => n + g.count, 0)}</b><span class="sm">à classer</span></div></div>
 ${I.groups.length ? `<b style="font-size:14px">À classer avant d’importer</b>${I.groups.map((g, i) => `<div class="card"><div class="line"><span>${E(g.label)}${g.count > 1 ? ` <span class="sm">×${g.count}</span>` : ''}</span><b>${eur2(g.total).replace('-', '−')}</b></div><div class="chips" style="margin-top:10px">${BUCKET_KEYS.concat(['income', 'ignore']).map((b) => bucketChip(b, g.bucket === b, 'ibucket', `${i}:${b}`)).join('')}</div></div>`).join('')}` : ''}
 ${I.confirmed ? `<div class="banner" style="cursor:default">${ic('check')}<span class="grow">${I.confirmed} opération${I.confirmed > 1 ? 's' : ''} saisie${I.confirmed > 1 ? 's' : ''} « en attente » confirmée${I.confirmed > 1 ? 's' : ''} par la banque</span></div>` : ''}
@@ -214,21 +219,30 @@ function detailScreen() {
   const sg = (n) => (n > 0.004 ? '+' : n < -0.004 ? '−' : '') + eur2(Math.abs(n));
   const line = (l, v, o = {}) => `<div class="line" style="padding:5px 0;${o.b ? 'font-weight:700;' : ''}"><span>${l}</span><span${o.c ? ` style="color:var(--${o.c})"` : ''}>${v}</span></div>`;
   const small = (t) => `<div class="sm" style="margin:2px 0 6px">${t}</div>`;
-  const pays = paydays(d);
-  const i = pays.findIndex((p) => cycleLabel(p.date) === U.month);
-  const range = i >= 0 ? ` · du ${longDay(pays[i].date)} ${pays[i + 1] ? `au ${longDay(dayBefore(pays[i + 1].date))}` : 'à aujourd’hui'}` : '';
+  const cyc = cycles(d);
+  const c = cyc.find((x) => x.label === U.month);
+  const range = c ? ` · du ${longDay(c.date)} ${c.end ? `au ${longDay(c.end)}` : 'à aujourd’hui'}` : '';
   const rec = reconcile(d, U.month);
+  const bank = accountBalance(d);
+  const nBal = balanceRows(d).length;
+  const control = !rec
+    ? ''
+    : rec.gaps.length
+      ? rec.gaps.map((g) => line(`Écart entre tes exports du ${E(longDay(g.from))} et du ${E(longDay(g.to))}`, sg(g.diff), { c: 'danger' })).join('') + small('Les opérations importées n’expliquent pas l’évolution du solde : il manque un export pour cette période, ou une opération importée a été supprimée. Le solde de départ est donc approximatif.')
+      : nBal > 1
+        ? small('✓ Contrôle : les soldes de tes exports concordent avec les opérations importées.')
+        : small('Le contrôle des soldes sera possible à partir du 2e import.');
   const compare = rec
     ? `<div class="card"><b>Pour comparer avec ta banque</b>
 ${rec.pendingIn ? line(`Solde du compte au ${E(longDay(rec.end))}`, eur2(rec.closing)) + line('Opérations en attente', sg(rec.pendingIn)) + `<div class="sep" style="margin:4px 0"></div>` + line('Solde estimé', eur2(rec.estimated), { b: 1 }) : line(`Solde du compte au ${E(longDay(rec.end))}`, eur2(rec.estimated), { b: 1 })}
 ${small('À comparer avec le solde affiché par ta banque.')}
-${line(`Solde la veille de la paye (${E(longDay(rec.openingDay))})`, sg(-rec.opening))}
+${line(`Solde la veille du début du mois (${E(longDay(rec.openingDay))})`, sg(-rec.opening))}
 ${Math.abs(rec.elsewhere) > 0.004 ? line('Opérations de la période comptées dans un autre mois', sg(-rec.elsewhere)) + small('Par exemple ton virement d’épargne de clôture.') : ''}
 ${Math.abs(rec.brought) > 0.004 ? line('Opérations d’autres dates comptées ici', sg(rec.brought)) : ''}
 ${Math.abs(rec.cash) > 0.004 ? line('Opérations hors banque (espèces…)', sg(rec.cash)) : ''}
 <div class="sep" style="margin:4px 0"></div>
 ${line('Somme des opérations de ce mois', sg(rec.sumOps), { b: 1 })}
-${small('Le solde de départ se déduit du solde de ton export : tu n’as rien à saisir.')}
+${control}
 </div>`
     : `<div class="card"><b>Pour comparer avec ta banque</b>
 ${line('Somme de toutes les opérations', sg(s.allSum))}
@@ -238,16 +252,19 @@ ${small(`${s.count} opération${s.count > 1 ? 's' : ''}${s.lastDate ? ` · la pl
   const misc = [];
   if (s.pending.count) misc.push(line(`${s.pending.count} opération${s.pending.count > 1 ? 's' : ''} à classer`, sg(s.pending.sum), { c: 'warn' }) + small(`Non déduites du reste. Reste si on les déduit : <b>${eur2(s.restIfPending)}</b>.`) + `<button class="chip" data-act="todo">Voir les opérations à classer</button>`);
   if (s.ignored.count) misc.push(line(`${s.ignored.count} opération${s.ignored.count > 1 ? 's' : ''} ignorée${s.ignored.count > 1 ? 's' : ''}`, sg(s.ignored.sum)) + small('Classées « Ignoré » : exclues du calcul, mais elles ont bien bougé sur ton compte.'));
-  if (s.surplus > 0.004) misc.push(line('Retraits d’épargne non utilisés', eur2(s.surplus)) + small('Part des retraits supérieure aux dépenses qu’ils financent.'));
+  if (bank?.stale.count) misc.push(line(`${bank.stale.count} saisie${bank.stale.count > 1 ? 's' : ''} en attente depuis plus de ${STALE_DAYS} jours`, sg(bank.stale.sum), { c: 'warn' }) + small('Jamais retrouvée(s) dans les exports : sans doute déjà passée(s) avec un autre montant. Elles ne sont plus ajoutées au solde du compte ; vérifie-les et supprime-les si besoin.') + `<button class="chip" data-act="stale">Voir ces opérations</button>`);
+  const used = s.covered.needs + s.covered.wants;
   return `${backBar('go', 'home', 'Détail du calcul')}
 <div class="sm" style="text-align:center">${E(monthLabel(U.month))}${E(range)}</div>
 <div class="card">
-${line('Revenus', s.income > 0 ? sg(s.base) : `${sg(s.base)} <span class="sm">(réglage)</span>`)}
+${s.fromSetting ? line('Revenus attendus <span class="sm">(réglage)</span>', sg(s.base)) + small(`Ta paye de ce mois n’est pas encore arrivée : reçu pour l’instant ${eur2(s.received)}.`) : line('Revenus', sg(s.base))}
 ${s.shiftedIn > 0.004 ? small(`dont ${eur2(s.shiftedIn)} reçus un autre mois et comptés ici`) : ''}
-${line('Besoins', sg(-s.net.needs))}${line('Envies', sg(-s.net.wants))}${line('Épargne versée', sg(-s.spent.savings))}
+${s.refunds > 0.004 ? small(`dont ${eur2(s.refunds)} de remboursements supérieurs aux dépenses de leur catégorie`) : ''}
+${line('Besoins', sg(-s.net.needs))}${line('Envies', sg(-s.net.wants))}${line('Épargne nette', sg(-s.net.savings))}
+${s.surplus > 0.004 ? small(`Versée ${eur2(s.spent.savings)} − ${eur2(s.surplus)} retirés sans financer de dépense.`) : ''}
 <div class="sep" style="margin:4px 0"></div>
 ${line('Reste ce mois', sg(s.rest), { b: 1 })}
-${s.covered.needs + s.covered.wants > 0.004 ? small(`Les ${eur2(s.covered.needs + s.covered.wants)} de dépenses financées par un retrait d’épargne ne sont pas déduits.`) : ''}
+${used > 0.004 ? small(`${eur2(used)} de dépenses financées par un retrait d’épargne ne sont pas déduits : ils ont été payés avec de l’argent mis de côté avant.`) : ''}
 </div>
 <div class="card"><b>Pas pris en compte</b>
 ${misc.length ? misc.join('<div class="sep" style="margin:6px 0"></div>') : small('Rien : toutes les opérations du mois sont comptées.')}
@@ -263,8 +280,8 @@ function histScreen() {
   return `<h1>Historique</h1><div class="chips" style="gap:16px">${legend}</div>
 ${months.map((m) => {
     const s = summarize(d, m);
-    const ok = s.base > 0 && s.pct.needs <= T.needs && s.pct.wants <= T.wants && s.pct.savings >= T.savings;
-    return `<div class="card tap" data-act="gomonth" data-v="${m}" style="cursor:pointer"><div class="line" style="margin-bottom:8px;align-items:center"><b>${E(monthLabel(m))}</b>${ok ? '<span class="pill ok">Cible atteinte</span>' : `<span class="sm">${s.pct.needs} / ${s.pct.wants} / ${s.pct.savings}</span>`}</div><div class="stack">${BUCKET_KEYS.map((k) => `<i style="width:${Math.min(100, s.pct[k])}%;background:${BUCKETS[k].color}"></i>`).join('')}</div>${ok ? `<div class="sm" style="margin-top:6px">${s.pct.needs} / ${s.pct.wants} / ${s.pct.savings}</div>` : ''}</div>`;
+    const ok = s.base > 0 && !s.off.needs && !s.off.wants && !s.off.savings;
+    return `<div class="card tap" data-act="gomonth" data-v="${m}" style="cursor:pointer"><div class="line" style="margin-bottom:8px;align-items:center"><b>${E(monthLabel(m))}</b>${ok ? '<span class="pill ok">Cible atteinte</span>' : `<span class="sm">${s.pct.needs} / ${s.pct.wants} / ${s.pct.savings}</span>`}</div><div class="stack">${BUCKET_KEYS.map((k) => `<i style="width:${Math.max(0, Math.min(100, s.pct[k]))}%;background:${BUCKETS[k].color}"></i>`).join('')}</div>${ok ? `<div class="sm" style="margin-top:6px">${s.pct.needs} / ${s.pct.wants} / ${s.pct.savings}</div>` : ''}</div>`;
   }).join('')}
 <div class="sm" style="text-align:center">Cible ${T.needs} / ${T.wants} / ${T.savings} (besoins / envies / épargne)</div>`;
 }
@@ -293,11 +310,11 @@ function setScreen() {
 <div class="sm" style="margin-bottom:8px">Chaque virement de paye ouvre un mois budgétaire, quelle que soit sa date.</div>
 ${keys.length ? `<div class="chips">${keys.map((k) => `<span class="chip on" style="cursor:default">${E(k)} <span data-act="rmpay" data-v="${E(k)}" style="cursor:pointer;margin-left:8px" aria-label="Retirer">×</span></span>`).join('')}</div>` : '<div class="sm">Aucune paye définie : les mois suivent le calendrier.</div>'}
 <div class="chips" style="margin-top:10px"><button class="chip" data-act="detectpay">Détecter ma paye</button></div>
-${keys.length ? '' : `<div class="sm" style="margin:12px 0 4px">Sinon : revenus reçus à partir du jour … comptés le mois suivant (0 = désactivé)</div><input type="number" inputmode="numeric" min="0" max="31" data-in="shiftday" value="${d.settings.incomeShiftDay || 0}">`}</div>
+${keys.length ? `<label class="chk" style="margin-top:10px"><input type="checkbox" data-in="closesav" ${d.settings.closeSavingsOnPayday !== false ? 'checked' : ''}> Un virement d’épargne fait le jour de la paye clôture le mois précédent (sinon il compte dans le nouveau mois)</label>` : `<div class="sm" style="margin:12px 0 4px">Sinon : revenus reçus à partir du jour … comptés le mois suivant (0 = désactivé)</div><input type="number" inputmode="numeric" min="0" max="31" data-in="shiftday" value="${d.settings.incomeShiftDay || 0}">`}</div>
 <div class="card">${sTitle('wallet', 'Budget', '#7F77DD')}
-<div class="sm" style="margin:0 0 4px">Revenus mensuels (si aucun salaire importé)</div><input type="number" inputmode="decimal" data-in="income" value="${d.settings.income || ''}" placeholder="2400">
+<div class="sm" style="margin:0 0 4px">Revenu mensuel attendu (utilisé tant que la paye du mois n’est pas arrivée)</div><input type="number" inputmode="decimal" data-in="income" value="${d.settings.income || ''}" placeholder="2400">
 <div class="sm" style="margin:12px 0 4px">Cibles en % : besoins / envies / épargne</div>
-<div class="chips" style="flex-wrap:nowrap">${BUCKET_KEYS.map((k) => `<input type="number" inputmode="numeric" data-in="t-${k}" value="${T[k]}" aria-label="${BUCKETS[k].label}">`).join('')}</div></div>
+<div class="chips" style="flex-wrap:nowrap">${BUCKET_KEYS.map((k) => `<input type="number" inputmode="numeric" data-in="t-${k}" value="${T[k]}" aria-label="${BUCKETS[k].label}">`).join('')}</div>${T.needs + T.wants + T.savings !== 100 ? `<div class="sm" style="color:var(--danger);margin-top:6px">Les trois cibles font ${T.needs + T.wants + T.savings} % au lieu de 100 %.</div>` : ''}</div>
 <div class="card">${sTitle('bank', 'BoursoBank', '#378ADD')}<div class="sm" style="margin:0 0 8px">Le bouton d’export ouvre :</div>
 <div class="chips"><button class="chip f ${d.settings.bankMode !== 'web' ? 'on' : ''}" data-act="bankmode" data-v="app">L’appli</button><button class="chip f ${d.settings.bankMode === 'web' ? 'on' : ''}" data-act="bankmode" data-v="web">Le site web</button></div>
 <div class="sm" style="margin:12px 0 4px">Adresse du site (mode « site web » ou si l’appli est absente)</div><input type="text" data-in="bankurl" value="${E(d.settings.bankUrl)}"></div>
@@ -328,7 +345,7 @@ function render() {
 const ACT = {
   go: (v) => {
     U.tab = v;
-    if (v === 'add') U.add = { amt: '', type: 'out', bucket: 'wants', sub: 'Restau', note: '' };
+    if (v === 'add') U.add = newAdd();
   },
   detail: () => (U.tab = 'detail'),
   month: (v) => (U.month = shiftMonth(U.month, +v)),
@@ -338,6 +355,10 @@ const ACT = {
   },
   todo: () => {
     U.filter = 'todo';
+    U.tab = 'ops';
+  },
+  stale: () => {
+    U.filter = 'stale';
     U.tab = 'ops';
   },
   filter: (v) => (U.filter = v),
@@ -359,7 +380,7 @@ const ACT = {
     const v = parseFloat(A.amt);
     if (!(v > 0)) return flash('Saisis un montant');
     const out = A.type === 'out';
-    store.addTx({
+    const tx = {
       date: todayISO(),
       label: A.note.trim() || (out ? A.sub || bucketLabel(A.bucket) : 'Revenu'),
       amount: out ? -v : v,
@@ -367,8 +388,11 @@ const ACT = {
       sub: out ? A.sub : '',
       note: A.note.trim(),
       ...(out && A.pending ? { pending: true } : {}),
-    });
-    U.month = todayISO().slice(0, 7);
+    };
+    const twin = tx.pending && importedTwin(store.get(), tx);
+    if (twin && !window.confirm(`La banque a déjà passé « ${twin.label} » (${eur2(twin.amount)}) le ${longDay(twin.date)}. L’ajouter quand même ?`)) return;
+    store.addTx(tx);
+    U.month = currentPeriod(store.get());
     U.tab = 'home';
     flash('Enregistré');
   },
@@ -383,11 +407,16 @@ const ACT = {
     store.updateTx(t.id, { bucket: v, sub: v === 'savings' && t.amount > 0 ? RETRAIT : '', covers: '' });
     const k = ruleKeyOf(t.label);
     if (U.edit.always && k) {
-      const n = store.addRule({ k, bucket: v });
+      const n = store.addRule({ k, bucket: v, sub: '' });
       if (n) flash(n === 1 ? '1 autre opération classée' : `${n} autres opérations classées`);
     }
   },
-  esub: (v) => store.updateTx(U.edit.id, { sub: v }),
+  esub: (v) => {
+    const t = store.get().transactions.find((x) => x.id === U.edit.id);
+    store.updateTx(U.edit.id, { sub: v });
+    const k = t && ruleKeyOf(t.label);
+    if (U.edit.always && k && t.bucket) store.addRule({ k, bucket: t.bucket, sub: v }); // la règle retient aussi la sous-catégorie
+  },
   ecovers: (v) => store.updateTx(U.edit.id, { covers: v }),
   eperiod: (v) => store.updateTx(U.edit.id, { period: v === 'auto' ? '' : v }),
   edel: () => {
@@ -417,6 +446,9 @@ const ACT = {
   },
   bankmode: (v) => store.setSettings({ bankMode: v }),
   iclose: () => (U.imp = null),
+  iaccount: (v) => {
+    U.imp = buildImport(U.imp.parsed, v, U.imp.name);
+  },
   ibucket: (v) => {
     const [i, b] = v.split(':');
     const g = U.imp.groups[+i];
@@ -429,13 +461,14 @@ const ACT = {
       for (const j of g.idxs) I.fresh[j].bucket = g.bucket;
       if (!g.key.startsWith('#')) store.addRule({ k: g.key, bucket: g.bucket });
     }
-    store.addMany(I.fresh.map((t) => ({ date: t.date, label: t.label, amount: t.amount, bucket: t.bucket, sub: t.sub || (t.bucket === 'savings' && t.amount > 0 ? RETRAIT : ''), hash: t.hash, source: 'import' })));
+    const keep = (t) => Object.fromEntries(['note', 'period', 'covers', 'hint', 'cat', 'parent'].filter((k) => t[k]).map((k) => [k, t[k]]));
+    store.addMany(I.fresh.map((t) => ({ date: t.date, vdate: t.vdate || t.date, label: t.label, amount: t.amount, bucket: t.bucket, sub: t.sub || (t.bucket === 'savings' && t.amount > 0 ? RETRAIT : ''), hash: t.hash, source: 'import', ...keep(t) })));
     for (const t of I.fresh) if (t.replaces) store.deleteTx(t.replaces); // saisie « en attente » confirmée par la banque
     store.setAccount(I.anchor);
+    if (I.parsed?.accounts?.length > 1 && store.get().settings.account !== I.account) store.setSettings({ account: I.account });
     const n = I.fresh.length;
-    const last = I.fresh.map((t) => t.date).sort().pop();
     U.imp = null;
-    if (last) U.month = last.slice(0, 7);
+    U.month = currentPeriod(store.get());
     U.tab = 'home';
     const c = I.confirmed ? ` · ${I.confirmed} en attente confirmée${I.confirmed > 1 ? 's' : ''}` : '';
     flash(n ? `${n} opération${n > 1 ? 's' : ''} importée${n > 1 ? 's' : ''}${c}` : 'Solde du compte mis à jour');
@@ -475,6 +508,7 @@ function onChange(el) {
   else if (k === 'bankurl') store.setSettings({ bankUrl: /^https:\/\//.test(el.value.trim()) ? el.value.trim() : d.settings.bankUrl });
   else if (k === 'always') U.edit.always = el.checked;
   else if (k === 'pending') U.add.pending = el.checked;
+  else if (k === 'closesav') store.setSettings({ closeSavingsOnPayday: el.checked });
   else if (k === 'paycheck') {
     const t = d.transactions.find((x) => x.id === U.edit?.id);
     const key = t && ruleKeyOf(t.label);
@@ -482,6 +516,12 @@ function onChange(el) {
     const keys = payKeysOf(d.settings);
     store.setSettings({ payKeys: el.checked ? [...new Set([...keys, key])] : keys.filter((x) => x !== key) });
   }
+}
+
+// Aperçu d'import pour le compte suivi (un export peut contenir plusieurs comptes).
+function buildImport(parsed, account, name) {
+  const p = selectAccount(parsed, account);
+  return { name, parsed, account: p.account, skipped: parsed.skipped, anchor: p.anchor, ...prepareImport(p.transactions.map((t) => ({ ...t })), store.get()) };
 }
 
 async function onCsv(ev) {
@@ -495,7 +535,7 @@ async function onCsv(ev) {
     const parsed = parseBoursorama(decodeBuffer(buf));
     if (!parsed.ok) U.imp = { error: parsed.error };
     else if (!parsed.transactions.length) U.imp = { error: 'Aucune opération trouvée dans ce fichier.' };
-    else U.imp = { name: f.name, skipped: parsed.skipped, anchor: parsed.anchor, ...prepareImport(parsed.transactions, store.get()) };
+    else U.imp = buildImport(parsed, store.get().settings.account, f.name);
   } catch (e) {
     U.imp = { error: e?.message?.includes('ZIP') || e?.message?.includes('archive') ? e.message : 'Lecture du fichier impossible.' };
   }
@@ -514,6 +554,7 @@ export function goBack() {
 
 export function init(el) {
   root = el;
+  U.month = currentPeriod(store.get()); // mois budgétaire en cours (en mode paye, il peut porter le nom du mois suivant)
   el.addEventListener('click', async (e) => {
     const a = e.target.closest('[data-act]');
     if (!a) return;

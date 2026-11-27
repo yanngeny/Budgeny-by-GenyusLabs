@@ -1,10 +1,21 @@
 // État de l'appli : copie de travail en localStorage, la source de vérité partagée est le fichier JSON.
-import { emptyData, normalize, uid, RETRAIT } from './model.js';
-import { labelMatchesKey } from './text.js';
+import { emptyData, normalize, uid, RETRAIT, maxStamp } from './model.js';
+import { ruleMatches, classText } from './text.js';
 
 const KEY = 'budgeny.data.v1';
 let data = emptyData();
+let clock = 0;
 const listeners = new Set();
+
+// Horodatage des modifications : jamais en arrière par rapport à ce qui est déjà dans les données. Si l'horloge
+// d'un autre téléphone est en avance, nos modifications suivantes restent quand même plus récentes que les siennes.
+export function stamp() {
+  clock = Math.max(Date.now(), clock + 1);
+  return clock;
+}
+const seeClock = () => {
+  clock = Math.max(clock, maxStamp(data));
+};
 
 export function load() {
   try {
@@ -12,6 +23,7 @@ export function load() {
   } catch {
     data = emptyData();
   }
+  seeClock();
   return data;
 }
 export const get = () => data;
@@ -35,12 +47,13 @@ function touch() {
 
 export function replace(d, origin = 'remote') {
   data = d;
+  seeClock();
   persist();
   emit(origin);
 }
 
 export function addMany(list) {
-  const now = Date.now();
+  const now = stamp();
   for (const t of list) {
     data.transactions.push({
       id: uid(),
@@ -60,20 +73,20 @@ export const addTx = (t) => addMany([t]);
 export function updateTx(id, patch) {
   const t = data.transactions.find((x) => x.id === id);
   if (!t) return;
-  Object.assign(t, patch, { _m: Date.now() });
+  Object.assign(t, patch, { _m: stamp() });
   touch();
 }
 
 export function deleteTx(id) {
   data.transactions = data.transactions.filter((x) => x.id !== id);
-  data.deleted.push({ id, _m: Date.now() });
+  data.deleted.push({ id, _m: stamp() });
   touch();
 }
 
 // Rattache plusieurs opérations à un mois budgétaire (AAAA-MM) en une seule écriture.
 export function setPeriod(ids, period) {
   const set = new Set(ids);
-  const now = Date.now();
+  const now = stamp();
   let n = 0;
   for (const t of data.transactions) {
     if (set.has(t.id)) {
@@ -86,32 +99,43 @@ export function setPeriod(ids, period) {
   return n;
 }
 
-// Retient le dernier solde du compte lu dans un export (le plus récent l'emporte).
+// Retient le solde du compte lu dans un export : historique des soldes (contrôle des trous entre exports) et
+// dernier solde connu (le plus récent l'emporte).
 export function setAccount(anchor) {
   if (!anchor || !Number.isFinite(anchor.balance)) return false;
-  if (data.account && data.account.date > anchor.date) return false;
-  data.account = { date: anchor.date, balance: anchor.balance, _m: Date.now() };
+  const now = stamp();
+  const id = 'bal:' + anchor.date;
+  const row = data.balances.find((b) => b.id === id);
+  if (row) Object.assign(row, { balance: anchor.balance, _m: now });
+  else data.balances.push({ id, date: anchor.date, balance: anchor.balance, _m: now });
+  if (!data.account || data.account.date <= anchor.date) data.account = { date: anchor.date, balance: anchor.balance, _m: now };
   touch();
   return true;
 }
 
+// Chaque réglage modifié garde son propre horodatage (fusion réglage par réglage).
 export function setSettings(patch) {
-  data.settings = { ...data.settings, ...patch, _m: Date.now() };
+  const now = stamp();
+  const f = { ...(data.settings._f || {}) };
+  for (const k of Object.keys(patch)) f[k] = now;
+  data.settings = { ...data.settings, ...patch, _m: now, _f: f };
   touch();
 }
 
-// Crée ou met à jour une règle, et l'applique aussitôt à toutes les opérations encore « à classer »
-// qui lui correspondent. Renvoie le nombre d'opérations rattrapées.
+// Crée ou met à jour une règle (catégorie et sous-catégorie), et l'applique aussitôt à toutes les opérations
+// encore « à classer » qui lui correspondent (même texte que le classement à l'import : libellé + indices de la
+// banque). Renvoie le nombre d'opérations rattrapées.
 export function addRule(r) {
+  const now = stamp();
   const ex = data.rules.find((x) => x.k === r.k);
-  if (ex) Object.assign(ex, r, { _m: Date.now() });
-  else data.rules.push({ id: uid(), _m: Date.now(), sub: '', ...r });
-  const now = Date.now();
+  const rule = { sub: '', ...r };
+  if (ex) Object.assign(ex, rule, { _m: now });
+  else data.rules.push({ id: uid(), _m: now, ...rule });
   let n = 0;
   for (const t of data.transactions) {
-    if (!t.bucket && labelMatchesKey(r.k, t.label)) {
-      t.bucket = r.bucket;
-      t.sub = r.sub || (r.bucket === 'savings' && t.amount > 0 ? RETRAIT : '');
+    if (!t.bucket && ruleMatches(r.k, classText(t))) {
+      t.bucket = rule.bucket;
+      t.sub = rule.bucket === 'savings' && t.amount > 0 ? RETRAIT : rule.sub || '';
       t._m = now;
       n++;
     }
