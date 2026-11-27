@@ -56,7 +56,13 @@ const flash = (m) => {
 };
 
 /* ---------- composants ---------- */
-const monthBar = () => `<div class="monthbar"><button class="ib" data-act="month" data-v="-1" aria-label="Mois précédent">${ic('left')}</button><div class="mtitle">${E(monthLabel(U.month))}</div><button class="ib" data-act="month" data-v="1" aria-label="Mois suivant">${ic('right')}</button></div>`;
+const monthBar = (sub = '') => `<div class="monthbar"><button class="ib" data-act="month" data-v="-1" aria-label="Mois précédent">${ic('left')}</button><div style="text-align:center"><div class="mtitle">${E(monthLabel(U.month))}</div>${sub ? `<div class="sm">${E(sub)}</div>` : ''}</div><button class="ib" data-act="month" data-v="1" aria-label="Mois suivant">${ic('right')}</button></div>`;
+const shortDay = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+// Dates du mois budgétaire affiché (mode paye) : « 25 oct. → 24 nov. »
+const cycleRange = (d) => {
+  const c = cycles(d).find((x) => x.label === U.month);
+  return c ? `${shortDay(c.date)} → ${c.end ? shortDay(c.end) : 'aujourd’hui'}` : '';
+};
 const backBar = (act, v, title) => `<div class="hd"><button class="ib" data-act="${act}"${v ? ` data-v="${v}"` : ''} aria-label="Retour">${ic('back')}</button><b style="font-size:17px">${title}</b><span style="width:40px"></span></div>`;
 const bucketChip = (b, on, act, v, extra = '') => `<button class="chip ${extra} b-${b} ${on ? 'on' : ''}" data-act="${act}" data-v="${v}">${BUCKET_ICON[b] ? ic(BUCKET_ICON[b]) : ''}${bucketLabel(b)}</button>`;
 
@@ -69,58 +75,45 @@ function opRow(t, per, accDate) {
   return `<div class="row tap" data-act="edit" data-v="${E(t.id)}"><div class="opic" style="--c:${c}">${ic(opIconName(t))}</div><div class="grow"><div>${E(t.label)}</div><div class="sm">${E(sub)}</div></div><div class="amt ${t.amount > 0 ? 'pos' : ''}">${t.amount > 0 ? '+' : ''}${eur2(t.amount).replace('-', '−')}</div></div>`;
 }
 
-function bucketCard(k, s, d, scale = 60) {
-  const p = s.pct[k];
-  const t = d.settings.targets[k];
-  const ok = !s.off[k];
-  const diff = Math.round(s.pctRaw[k] - t);
-  const txt = ok ? (k === 'savings' ? 'Cible atteinte' : 'Dans la cible') : `${diff > 0 ? '+' : '−'}${Math.abs(diff)} pts`;
+// Tuile d'une catégorie : anneau (pourcentage des revenus, point = cible), montant, écart à la cible.
+function bucketTile(k, s, d) {
   const color = BUCKETS[k].color;
-  const w = Math.max(0, Math.min(100, (p / scale) * 100));
+  const t = d.settings.targets[k];
+  const p = s.pct[k];
+  const R = 26;
+  const C = 2 * Math.PI * R;
+  const dash = (C * Math.max(0, Math.min(100, p))) / 100;
+  const ang = ((t / 100) * 360 - 90) * (Math.PI / 180);
+  const diff = Math.round(s.pctRaw[k] - t);
+  const ok = !s.off[k];
+  const status = ok ? 'OK' : `${diff > 0 ? '+' : '−'}${Math.abs(diff)} pts`;
+  const amount = k === 'savings' ? s.net.savings : s.spent[k];
   const cov = s.covered[k] || 0;
-  let pcts = `${pc(p)} % · cible ${t} %`;
-  let amount = s.net[k];
-  let hatch = '';
-  let note = '';
-  if (k === 'savings') {
-    if (s.withdrawn > 0) note = `Versé ${eur(s.spent.savings)} · retiré ${eur(s.withdrawn)}`;
-    amount = s.net.savings;
-  } else if (cov > 0) {
-    // Les deux pourcentages : total, et hors part financée par un retrait d'épargne (comparé à la cible)
-    pcts = `${s.pctGross[k]} % au total · ${p} % hors épargne · cible ${t} %`;
-    amount = s.spent[k];
-    hatch = `<i style="width:${Math.max(0, Math.min(100, (s.pctGross[k] / scale) * 100))}%;background:repeating-linear-gradient(135deg,${color} 0 4px,transparent 4px 8px);opacity:.6"></i>`;
-    note = `dont ${eur(cov)} financés par l’épargne`;
-  }
-  return `<div class="bk"><div class="bk-top"><div class="opic" style="--c:${color}">${ic(BUCKET_ICON[k])}</div><div class="grow"><div>${bucketLabel(k)}</div><div class="sm">${pcts}</div></div><div style="text-align:right"><div class="amt">${k === 'savings' && amount < 0 ? '−' + eur(-amount) : eur(amount)}</div><span class="pill ${ok ? 'ok' : 'warn'}">${txt}</span></div></div><div class="bar">${hatch}<i style="width:${w}%;background:${color}"></i><b style="left:${Math.min(100, (t / scale) * 100)}%"></b></div>${note ? `<div class="sm">${note}</div>` : ''}</div>`;
+  const sub = k === 'savings' ? (s.withdrawn > 0 ? `${eur(s.spent.savings)} − ${eur(s.withdrawn)}` : '') : cov > 0 ? `${eur(cov)} via épargne` : '';
+  const ring = `<svg class="ring" viewBox="0 0 64 64" role="img" aria-label="${bucketLabel(k)} ${pc(p)} %, cible ${t} %"><circle cx="32" cy="32" r="${R}" fill="none" stroke="var(--tint)" stroke-width="7"/>${dash > 0 ? `<circle cx="32" cy="32" r="${R}" fill="none" stroke="${color}" stroke-width="7" stroke-linecap="round" stroke-dasharray="${dash.toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 32 32)"/>` : ''}<circle cx="${(32 + R * Math.cos(ang)).toFixed(1)}" cy="${(32 + R * Math.sin(ang)).toFixed(1)}" r="3" fill="currentColor"/><text x="32" y="37" text-anchor="middle" font-size="14" font-weight="700" fill="currentColor">${pc(p)} %</text></svg>`;
+  return `<button class="tile3" data-act="gobucket" data-v="${k}">${ring}<b class="t3-l">${bucketLabel(k)}</b><b class="t3-a">${amount < 0 ? '−' + eur(-amount) : eur(amount)}</b><span class="t3-s ${ok ? 'ok' : 'warn'}">${status}</span><span class="t3-x">${sub}</span></button>`;
 }
 
-/* ---------- écrans ---------- */
 function home() {
   const d = store.get();
   const per = periodFn(d);
   const s = summarize(d, U.month);
-  const T = d.settings.targets;
-  const recent = d.transactions.filter((t) => per(t) === U.month).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 5);
+  const recent = d.transactions.filter((t) => per(t) === U.month).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 3);
   const accDate = accountBalance(d)?.date;
   const S = sync.state;
-  const sy = !S.ref ? ['', 'Local'] : S.status === 'syncing' ? ['busy', 'Synchro…'] : S.status === 'error' ? ['err', 'Erreur'] : ['ok', 'Synchronisé'];
   const needPay = !payKeysOf(d.settings).length && suggestPay(d);
-  const bank = accountBalance(d);
-  // Échelle commune aux trois barres (au moins 60 %), pour que la dépense financée par l'épargne reste visible
-  const scale = Math.max(60, Math.ceil(Math.max(...BUCKET_KEYS.map((k) => (s.base > 0 ? (s.spent[k] / s.base) * 100 : 0))) / 10) * 10);
-  const offs = BUCKET_KEYS.filter((k) => s.off[k]).length;
+  const used = s.total;
+  const over = s.base > 0 && used > s.base;
   const hero =
     s.base > 0
-      ? `<div class="hero" data-act="detail"><div class="hero-top"><span class="hero-label">Reste ce mois</span><span class="pill">${offs ? `${offs} à surveiller` : 'Dans les clous'}</span></div><div class="hero-amt">${eur(s.rest)}</div><div class="hero-sub"><span>${eur(s.base)} ${s.fromSetting ? 'de revenus attendus' : 'de revenus'} · ${eur(s.spent.needs + s.spent.wants)} dépensés · ${s.net.savings < 0 ? '−' + eur(-s.net.savings) : eur(s.net.savings)} épargnés</span><span>Détail ›</span></div>${bank ? `<div class="hero-sub" style="margin-top:6px"><span>Solde du compte${bank.stale.count ? ` · ${bank.stale.count} en attente à vérifier` : ''}</span><span style="color:#fff;font-weight:600">${eur2(bank.total)}</span></div>` : ''}</div>`
+      ? `<div class="hero" data-act="detail"><div class="hero-top"><span class="hero-label">Reste ce mois</span>${ic('right')}</div><div class="hero-amt">${eur(s.rest)}</div><div class="hero-bar"><i style="width:${Math.max(0, Math.min(100, (used / s.base) * 100))}%${over ? ';background:var(--warn)' : ''}"></i></div><div class="hero-sub"><span>${eur(used)} utilisés</span><span>sur ${eur(s.base)}${s.fromSetting ? ' attendus' : ''}</span></div></div>`
       : `<div class="banner" data-act="go" data-v="set">${ic('wallet')}<span class="grow">Renseigne tes revenus mensuels dans les réglages, ou importe ton salaire.</span>${ic('right')}</div>`;
-  return `<div class="top"><div class="brand">${logo(30)}Budgeny</div><div class="sync ${sy[0]}" data-act="go" data-v="set"><i></i>${sy[1]}</div></div>
-${monthBar()}
-${!S.ref ? `<div class="banner" data-act="go" data-v="set">${ic('cloud')}<span class="grow">Choisis où enregistrer tes données (téléphone ou Google Drive)</span>${ic('right')}</div>` : ''}
+  return `${monthBar(cycleRange(d))}
+${!S.ref ? `<div class="banner" data-act="go" data-v="set">${ic('cloud')}<span class="grow">Choisis où enregistrer tes données (téléphone ou Google Drive)</span>${ic('right')}</div>` : S.status === 'error' ? `<div class="banner" data-act="go" data-v="set" style="color:var(--danger)">${ic('cloud')}<span class="grow">Synchronisation impossible : voir les réglages</span>${ic('right')}</div>` : ''}
 ${needPay ? `<div class="banner" data-act="detectpay">${ic('calendar')}<span class="grow">Indique ta paye pour que les mois suivent ton salaire</span>${ic('right')}</div>` : ''}
 ${hero}
-${BUCKET_KEYS.map((k) => bucketCard(k, s, d, scale)).join('')}
-${s.todo ? `<div class="banner" data-act="todo">${ic('help')}<span class="grow">${s.todo} opération${s.todo > 1 ? 's' : ''} à catégoriser</span>${ic('right')}</div>` : ''}
+${s.base > 0 ? `<div class="tiles3">${BUCKET_KEYS.map((k) => bucketTile(k, s, d)).join('')}</div>` : ''}
+${s.todo ? `<div class="banner todo" data-act="todo"><i class="dot"></i><span class="grow">${s.todo} opération${s.todo > 1 ? 's' : ''} à classer</span>${ic('right')}</div>` : ''}
 ${recent.length ? `<div class="sec">Dernières opérations<a data-act="go" data-v="ops">Tout voir ›</a></div><div class="grp">${recent.map((t) => opRow(t, per, accDate)).join('')}</div>` : `<div class="card empty">${logo(60)}<b>Rien pour ce mois</b><div class="sm">Importe ton export BoursoBank ou ajoute une dépense avec le bouton +.</div><button class="btn" data-act="go" data-v="import">${ic('upload')}Importer un export</button></div>`}`;
 }
 
@@ -366,6 +359,10 @@ const ACT = {
     U.tab = 'ops';
   },
   filter: (v) => (U.filter = v),
+  gobucket: (v) => {
+    U.filter = v;
+    U.tab = 'ops';
+  },
   atype: (v) => (U.add.type = v),
   abucket: (v) => {
     U.add.bucket = v;

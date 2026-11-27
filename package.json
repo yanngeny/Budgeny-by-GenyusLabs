@@ -1,6 +1,6 @@
 {
   "name": "budgeny",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "Budgeny by Genyus Labs : suivi de budget 50/30/20, base JSON synchronisée",
